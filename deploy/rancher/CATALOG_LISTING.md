@@ -15,25 +15,25 @@ The import takes the page title from `appVersion` and the chart version from `ve
 Edits here do not propagate automatically — SUSE owns the page, so any change has to be mailed to the partner contact.
 What gets mailed is `pcsc-listing.html` beside this file, not the sections below: the page template holds at most 1494 characters including the list markup, and `tests/unit/pcsc-listing.test.ts` keeps that file under it.
 
-> **Accuracy gate: engine count.** The wording below says nineteen engines. That is true only
-> from the release that carries **etcd** ([#1089](https://github.com/libredb/libredb-studio/issues/1089)), which followed Apache Kafka; eighteen is true of a release that carries **Apache Kafka** ([#1088](https://github.com/libredb/libredb-studio/issues/1088)) and not etcd, if one is cut, which followed Prometheus; seventeen is true of a release that carries **Prometheus** ([#1085](https://github.com/libredb/libredb-studio/issues/1085)) and not Kafka, if one is cut,
+> **Accuracy gate: engine count.** The wording below says twenty engines. That is true only
+> from the release that carries **Db2 LUW** ([#786](https://github.com/libredb/libredb-studio/issues/786)), which followed etcd; nineteen is true of a release that carries **etcd** ([#1089](https://github.com/libredb/libredb-studio/issues/1089)) and not Db2 LUW, if one is cut, which followed Apache Kafka; eighteen is true of a release that carries **Apache Kafka** ([#1088](https://github.com/libredb/libredb-studio/issues/1088)) and not etcd, if one is cut, which followed Prometheus; seventeen is true of a release that carries **Prometheus** ([#1085](https://github.com/libredb/libredb-studio/issues/1085)) and not Kafka, if one is cut,
 > which followed DuckDB; sixteen was true from the release that carried **DuckDB**
 > ([#424](https://github.com/libredb/libredb-studio/issues/424)), which followed libSQL, and fourteen from **0.13.0** onwards, the release that carried
 > Elasticsearch, OpenSearch, Trino and Apache Cassandra alongside the ten of 0.11.0.
 > The number is the `SHIPPED` record in
 > `src/lib/db/compatibility.ts` minus the embedded `libredb`, which `EXTERNAL` in the same
 > file already splits out; read it from there rather than from this file. The catalog entry
-> is version-scoped, so do not publish the nineteen-engine wording against a version that
-> predates etcd: send the eighteen-engine variant for a release with Apache Kafka and not etcd (its size-cut body is `pcsc-listing.html` at 2ddb99c9), the seventeen-engine variant for a release with Prometheus and not Kafka (its size-cut body is `pcsc-listing.html` at 8dfdfcce), the sixteen-engine variant (the DuckDB release onwards; its size-cut body is `pcsc-listing.html` at 06a4cb11), the fourteen-engine one (0.13.0 onwards), the ten-engine one
+> is version-scoped, so do not publish the twenty-engine wording against a version that
+> predates Db2 LUW: send the nineteen-engine variant for a release with etcd and not Db2 LUW (its size-cut body is `pcsc-listing.html` at 42050550), the eighteen-engine variant for a release with Apache Kafka and not etcd (its size-cut body is `pcsc-listing.html` at 2ddb99c9), the seventeen-engine variant for a release with Prometheus and not Kafka (its size-cut body is `pcsc-listing.html` at 8dfdfcce), the sixteen-engine variant (the DuckDB release onwards; its size-cut body is `pcsc-listing.html` at 06a4cb11), the fourteen-engine one (0.13.0 onwards), the ten-engine one
 > (0.11.0 onwards) or the eight-engine one instead.
 >
-> **The scope goes with the count.** Browsing and querying reach all nineteen; editing data does
+> **The scope goes with the count.** Browsing and querying reach all twenty; editing data does
 > not, so "manage data across …" must never be written over the whole list. Read the split from
 > the providers: `supportsInlineRowEdit` and `supportsCreateTable` default to `true` in
 > `src/lib/db/base-provider.ts` and each provider that cannot turns them off, which leaves inline
 > row editing on PostgreSQL, MySQL, Oracle, SQL Server, SQLite, libSQL and DuckDB, and table
 > creation on those seven plus Trino. Every other engine (Cassandra, ClickHouse, Couchbase, Druid,
-> Elasticsearch, Apache Kafka, MongoDB, OpenSearch, Prometheus, Redis and etcd) reports those controls as unsupported. The
+> Db2 LUW, Elasticsearch, Apache Kafka, MongoDB, OpenSearch, Prometheus, Redis and etcd) reports those controls as unsupported. The
 > reason differs per engine and the copy must not flatten it: on Elasticsearch no mutation is in
 > the SQL grammar at all, while OpenSearch's grammar carries exactly one — `DELETE`, off by
 > default on the cluster (`docs/providers/opensearch.md` §5.6, and `SEARCH_SCHEMA_REFRESH_PATTERN`
@@ -45,7 +45,9 @@ What gets mailed is `pcsc-listing.html` beside this file, not the sections below
 > line 183. On Druid the true sentence is the one `docs/providers/druid.md` and the README both
 > carry: Druid SQL has no `UPDATE`, no `DELETE` and no `CREATE TABLE`. "Druid has no `INSERT`" is
 > false — `INSERT` and `REPLACE` exist there through the MSQ task engine, on an endpoint this
-> provider does not use (`docs/providers/druid.md` §5.5).
+> provider does not use (`docs/providers/druid.md` §5.5). On Db2 LUW the engine can write and the
+> driver is the reason: `db2-node` 1.0.22 misreads non-ASCII text, so a write-back would store
+> corrupted values (`docs/providers/db2.md`, K1); never say Db2 itself is read-only.
 >
 > **Accuracy gate — AI wording.** Natural-language-to-SQL was removed from the product, so
 > no listing may say the assistant writes SQL from a plain-English question. What ships is
@@ -88,11 +90,12 @@ What gets mailed is `pcsc-listing.html` beside this file, not the sections below
 > `operator/helm-charts/libredb-studio/` by hand, or the sync guard fails the required check.
 >
 > What *is* release-coupled is every marketplace description that spells the count:
-> `deploy/azure`, `deploy/railway` and `deploy/caprover` said seventeen from the merge of #1085, eighteen from the merge of #1088, and say nineteen from the merge of #1089,
+> `deploy/azure`, `deploy/railway` and `deploy/caprover` said seventeen from the merge of #1085, eighteen from the merge of #1088, nineteen from the merge of #1089, and say twenty from the merge of #786,
 > because `tests/unit/lib/catalog-copy-engine-count.test.ts` holds every counted numeral there to
 > `EXTERNAL_DATABASE_TYPES` on `main`.
 > CapRover and Railway both moved to 0.17.0, which carries Prometheus and Apache Kafka, so their numerals and their tags agreed again until the merge of #1089.
 > From that merge they say nineteen, one ahead of the 0.17.0 they name, until the release that carries etcd moves their tags: the exception the merge of #1088 opened and 0.17.0 closed, opened once more.
+> From the merge of #786 they say twenty, two ahead of 0.17.0, until a release that carries etcd and Db2 LUW moves their tags.
 > At the DuckDB release they said sixteen - and all three were still on fourteen when it landed, a full engine behind, because
 > libSQL had moved the code and not them. `deploy/railway/template.json` and
 > `deploy/caprover/libredb-studio.yml` were on thirteen once for the same reason: each channel
@@ -100,14 +103,14 @@ What gets mailed is `pcsc-listing.html` beside this file, not the sections below
 > describes an artifact a user can already download, so the number has to be true at the tag it
 > names. Read the number from `SHIPPED` when a tag carries it, and see BACKLOG D39 - nothing
 > counts these lists, which is why three PRs in a row have corrected them by hand.
-> The AUR package is one ahead as CapRover and Railway are: `packaging/aur/PKGBUILD` and its `.SRCINFO` pin `pkgver=0.17.0`, whose payload has eighteen engines and no etcd, and say nineteen from the merge of #1089, because `tests/unit/lib/catalog-copy-engine-count.test.ts` counts the `pkgdesc` line on `main` too.
+> The AUR package is one ahead as CapRover and Railway are: `packaging/aur/PKGBUILD` and its `.SRCINFO` pin `pkgver=0.17.0`, whose payload has eighteen engines and no etcd, and say nineteen from the merge of #1089 and twenty from the merge of #786, because `tests/unit/lib/catalog-copy-engine-count.test.ts` counts the `pkgdesc` line on `main` too.
 > Its first import is a hand push of those files (`packaging/aur/README.md`, Releases), so one made from `main` after that merge lists 0.17.0 as nineteen engines: push it before the merge, or render the `PKGBUILD` with `scripts/render-aur-pkgbuild.mjs` for the release that carries etcd, regenerate `.SRCINFO` from that render with `makepkg --printsrcinfo > .SRCINFO`, since the script writes the `PKGBUILD` alone, and push both.
 > `packaging/winget`, `packaging/chocolatey` and `packaging/homebrew` carry **no number** in
 > their summaries - nothing regenerates them from the registry, so any digit there is stale the
 > day the next engine lands (issue #445) - but their exhaustive descriptions still name every
 > engine, and so does `desktop/src-tauri/tauri.conf.json`.
 > `packaging/linux/nfpm.yaml` and the operator CSVs are consumed at release time from `main`,
-> so they name nineteen now and the next tag publishes it.
+> so they name twenty now and the next tag publishes it.
 
 ## Listing facts
 
@@ -131,14 +134,14 @@ What gets mailed is `pcsc-listing.html` beside this file, not the sections below
 ## Short description (one sentence)
 
 LibreDB Studio is an MIT-licensed, AI-assisted open source SQL IDE that connects to
-PostgreSQL, MySQL, Oracle, SQL Server, SQLite, libSQL, DuckDB, MongoDB, Redis, Couchbase,
+PostgreSQL, MySQL, Oracle, Db2 LUW, SQL Server, SQLite, libSQL, DuckDB, MongoDB, Redis, Couchbase,
 ClickHouse, Apache Druid, Elasticsearch, OpenSearch, Trino, Apache Cassandra,
 Prometheus, Apache Kafka and etcd directly from the browser.
 
 ## Long description
 
 LibreDB Studio brings a full SQL IDE to Rancher-managed Kubernetes clusters: browse
-schemas and run queries across PostgreSQL, MySQL, Oracle, SQL Server, SQLite, libSQL, DuckDB,
+schemas and run queries across PostgreSQL, MySQL, Oracle, Db2 LUW, SQL Server, SQLite, libSQL, DuckDB,
 MongoDB, Redis, Couchbase, ClickHouse, Apache Druid, Elasticsearch, OpenSearch, Trino,
 Apache Cassandra, Prometheus, Apache Kafka and etcd from a single web interface, with no desktop
 client to install. Editing
@@ -165,8 +168,8 @@ versions are documented and validated for every release.
 
 ## Key features (bullet form, if the catalog template asks for them)
 
-- Nineteen database engines in one browser-based IDE: PostgreSQL, MySQL, Oracle,
-  SQL Server, SQLite, libSQL, DuckDB, MongoDB, Redis, Couchbase, ClickHouse, Apache Druid,
+- Twenty database engines in one browser-based IDE: PostgreSQL, MySQL, Oracle,
+  Db2 LUW, SQL Server, SQLite, libSQL, DuckDB, MongoDB, Redis, Couchbase, ClickHouse, Apache Druid,
   Elasticsearch, OpenSearch, Trino, Apache Cassandra, Prometheus, Apache Kafka, etcd
 - One-click install from the Rancher Apps catalog — deployable with default values,
   zero configuration required
@@ -249,6 +252,7 @@ The open question to SUSE is whether their import can read the listing from a ch
 Since #1085, `app-readme.md` and `pcsc-listing.html` name seventeen engines, one more than #1168 and the page's 0.16.2 carry, so neither goes out before a release that carries Prometheus reaches the catalog.
 Since #1088 they name eighteen, two more than the page's 0.16.2 carries, so neither goes out before a release that carries Apache Kafka reaches the catalog.
 Since #1089 they name nineteen, three more than the page's 0.16.2 carries, so neither goes out before a release that carries etcd reaches the catalog.
+Since #786 they name twenty, four more than the page's 0.16.2 carries, so neither goes out before a release that carries Db2 LUW reaches the catalog.
 
 Vendor naming, as settled: the page heads the partner as **Sekoya** (the legal entity,
 Sekoya Grup Bilisim ve Teknoloji Ltd. Sti.) with the product named **LibreDB Studio**.
