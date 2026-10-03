@@ -705,9 +705,10 @@ export function generateTableQuery(
  * not at all, in which case the column is named in a comment above the statement. Names in the
  * comment are JSON-quoted, as `commentName` quotes them, so no name can end the comment.
  *
- * With no column to read, because the list is not loaded or every column is left out, the
- * preview reads `*` under the declaration's own note: there is no list to project, and saying
- * so beats a statement that pretends to have one.
+ * With no column list loaded, the preview reads `*` under the declaration's own note: there is
+ * no list to project, and saying so beats a statement that pretends to have one. With a list
+ * whose every column is left out, the comment naming them is the whole preview: `*` would read
+ * exactly the columns the declaration says cannot be read.
  */
 function projectedPreview(
   table: string,
@@ -729,12 +730,14 @@ function projectedPreview(
       read.push(`${rule.expression.replaceAll("{column}", quoted)} AS ${quoted}`);
     }
   }
-  if (read.length === 0) {
+  if (columns.length === 0) {
     return `-- ${projection.unprojectedNote}\nSELECT * FROM ${table}${terminator(capabilities)}`;
   }
+  const comment = `-- Not read by this preview: ${omitted.join(", ")}. ${projection.omittedNote}`;
+  if (read.length === 0) return comment;
   const statement = `SELECT ${read.join(", ")} FROM ${table}${terminator(capabilities)}`;
   if (omitted.length === 0) return statement;
-  return `-- Not read by this preview: ${omitted.join(", ")}. ${projection.omittedNote}\n${statement}`;
+  return `${comment}\n${statement}`;
 }
 
 /**

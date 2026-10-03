@@ -95,9 +95,11 @@ describe("generateTableQuery with a declared preview projection (#786)", () => {
     );
   });
 
-  test("a table whose every column is left out reads every column, under the unprojected note", () => {
-    expect(generateTableQuery(["APP", "T"], projected, [columns[2]])).toBe(
-      '-- The column list is not loaded, so every column is read as it is.\nSELECT * FROM "APP"."T";',
+  // The list IS loaded here, so the unprojected note would be false, and `SELECT *` would read
+  // exactly the columns the declaration says the driver cannot. The comment is the whole preview.
+  test("a table whose every column is left out names them and reads nothing", () => {
+    expect(generateTableQuery(["APP", "T"], projected, [columns[2], columns[3]])).toBe(
+      '-- Not read by this preview: "C_CLOB" CLOB(1048576), "odd\\"name" XML. The driver cannot read these types.',
     );
   });
 
