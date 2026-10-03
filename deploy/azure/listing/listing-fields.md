@@ -36,7 +36,7 @@ Open-source SQL IDE for 21 engines: PostgreSQL, MySQL, SQL Server, Oracle, Mongo
 **Short description** (limit 256):
 
 <!-- limit:256 -->
-Open-source, self-hosted SQL IDE for 21 engines: PostgreSQL, MySQL, SQL Server, Oracle, Db2 LUW, SQLite, libSQL, DuckDB, MongoDB, Redis, Couchbase, ClickHouse, Druid, Elasticsearch, OpenSearch, Trino, Cassandra, Prometheus, Kafka, etcd and Neo4j, with read-only AI.
+Open-source SQL IDE for 21 engines: PostgreSQL, MySQL, SQL Server, Oracle, Db2 LUW, SQLite, libSQL, DuckDB, MongoDB, Redis, Couchbase, ClickHouse, Druid, Elasticsearch, OpenSearch, Trino, Cassandra, Prometheus, Kafka, etcd and Neo4j, with read-only AI.
 
 **Description** (limit 5000, HTML): see [description.html](description.html) —
 the limit is asserted by the unit test.

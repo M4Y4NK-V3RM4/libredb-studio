@@ -110,7 +110,7 @@ Every one of those tags is published on three bases, and the suffix is appended 
 ## Supported databases
 
 Twenty-one external engines share one interface.
-The twenty-second row is the embedded LibreDB store, which ships inside the image rather than being a server you connect out to.
+The twenty-second row is the embedded LibreDB store: it ships inside the image, not as a server you reach.
 
 | Database | Driver | Highlights |
 | :--- | :--- | :--- |

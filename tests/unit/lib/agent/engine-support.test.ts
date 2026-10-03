@@ -47,7 +47,9 @@ const factorySource = readFileSync(join(repoRoot, "src", "lib", "db", "factory.t
 
 /** Every member of the `DatabaseType` union, parsed from its declaration in `src/lib/types.ts`. */
 function parseDatabaseTypes(): DatabaseType[] {
-  const declaration = /export type DatabaseType =([\s\S]*?);\n/.exec(typesSource);
+  // The declaration ends at the semicolon after a quoted arm, not at the first `;` at a line end: a
+  // comment inside the union may end its line with one (the neo4j arm's does), which cut the parse short.
+  const declaration = /export type DatabaseType =([\s\S]*?")\s*;\n/.exec(typesSource);
   if (!declaration) throw new Error("could not locate the DatabaseType declaration in src/lib/types.ts");
   const ids = [...declaration[1].matchAll(/^\s*\|\s*"([a-z0-9]+)"/gm)].map((match) => match[1] as DatabaseType);
   if (ids.length === 0) throw new Error("parsed no ids out of the DatabaseType declaration");
