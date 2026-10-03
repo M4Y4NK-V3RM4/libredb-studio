@@ -28,7 +28,7 @@ None of it is a GitHub issue.
 **Sections**
 
 - [SQL statement reading](#sql-statement-reading) — S2–S6 · 4
-- [Drivers and connections](#drivers-and-connections) — D1-D144, U17 · 88
+- [Drivers and connections](#drivers-and-connections) — D1-D145, U17 · 89
 - [Value interpolation](#value-interpolation) — V1
 - [Row editing](#row-editing) — R1–R3 · 3
 - [Studio UI and query execution](#studio-ui-and-query-execution) — X2-X19, U2-U71 · 58
@@ -2039,6 +2039,16 @@ winget and Chocolatey declare it as a dependency; the portable zip, Scoop and `n
 Found 2026-10-03 while packaging the Db2 provider (#786).
 
 **Done when:** a clean Windows 11 VM without the redistributable is measured on every Windows channel, each channel either installs the runtime or says what to install before the first Db2 connection, and a missing runtime reaches the user as a sentence naming it rather than a load error.
+
+### D145. The Db2 schema diff mixes schemas and writes views as tables, and nothing can turn it off
+
+Nothing in the provider capabilities disables schema diff or migration DDL for an engine, so a Db2 connection offers both with the shared engine's limits, measured on the Db2 provider branch.
+The diff keys objects by name only, so `APP.T` and `REPORTING.T` collide; it writes a view or a materialized query table as `CREATE TABLE`; and it quotes a cross-schema reference `SCHEMA.TABLE` as one identifier.
+The nearest lever is the migration generator's `NO_TABLE_DDL` type set in `src/lib/schema-diff/migration-generator.ts`, which declines the whole diff.
+
+Found 2026-10-03 while building the Db2 provider (#786); the schema-diff engine was left untouched.
+
+**Done when:** either the diff keys objects by schema and name, keeps a view or MQT a view, and quotes each part of a qualified name on its own, each pinned by a test over a two-schema Db2 fixture, or a declared capability turns schema diff and migration DDL off for an engine that cannot be served correctly, with the Db2 provider declaring it and the UI saying why.
 
 ## Value interpolation
 
