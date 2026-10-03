@@ -217,6 +217,14 @@ async function main(): Promise<void> {
     expect(overview.tableCount > 0, `overview ${JSON.stringify(overview)}`);
   });
 
+  await check("getTableStats lists the fixture's tables and its materialized query table, no view", async () => {
+    const names = (await provider.getTableStats()).map((row) => `${row.schemaName}.${row.tableName}`);
+    for (const name of ["APP.ORDERS", "APP.O'Brien", "APP.Mixed Case", "APP.ORDER_TOTALS", "REPORTING.DAILY"]) {
+      expect(names.includes(name), `${name} missing from ${JSON.stringify(names)}`);
+    }
+    expect(!names.includes("APP.ORDER_SUMMARY"), `the view APP.ORDER_SUMMARY is listed: ${JSON.stringify(names)}`);
+  });
+
   await check("a JS bigint parameter is refused with QueryError and the process lives", async () => {
     let refused: unknown;
     try {

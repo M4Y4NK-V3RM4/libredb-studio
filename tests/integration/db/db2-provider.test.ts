@@ -48,7 +48,7 @@ import type { CaFileSystem } from "@/lib/db/providers/sql/db2/connection";
 import type { Db2ClientOptions, Db2ColumnMeta, Db2Driver, Db2QueryResult } from "@/lib/db/providers/sql/db2/driver";
 import { Db2Provider } from "@/lib/db/providers/sql/db2/index";
 import { MAINTENANCE_TARGET_TYPE_SQL } from "@/lib/db/providers/sql/db2/maintenance";
-import { OBJECT_COUNTS_SQL, VERSION_SQL } from "@/lib/db/providers/sql/db2/monitoring";
+import { OBJECT_COUNTS_SQL, TABLE_STATS_SQL, VERSION_SQL } from "@/lib/db/providers/sql/db2/monitoring";
 import { SOURCE_TRUNCATION_REASON } from "@/lib/db/providers/sql/db2/objects";
 import { DB2_PREVIEW_PROJECTION } from "@/lib/db/providers/sql/db2/values";
 import type { DatabaseConnection, ProviderCapabilities } from "@/lib/db/types";
@@ -437,6 +437,16 @@ function catalogAnswer(sql: string, params: unknown[] = []): Db2QueryResult | un
       return rows([{ SERVICE_LEVEL: "DB2 v12.1.0.0" }]);
     case OBJECT_COUNTS_SQL:
       return rows([{ TABLE_COUNT: 5, INDEX_COUNT: 9 }]);
+    case TABLE_STATS_SQL:
+      return rows(
+        RELATIONS.filter((relation) => relation.type === "T" || relation.type === "S")
+          .sort((a, b) => (a.schema === b.schema ? (a.name < b.name ? -1 : 1) : a.schema < b.schema ? -1 : 1))
+          .map((relation) => ({
+            SCHEMA_HEX: hex(relation.schema),
+            NAME_HEX: hex(relation.name),
+            CARD: relation.card ?? -1,
+          })),
+      );
     default:
       return undefined;
   }
@@ -1269,8 +1279,36 @@ describe("Db2Provider: monitoring", () => {
     expect(await provider.getPerformanceMetrics()).toEqual({});
     expect(await provider.getSlowQueries()).toEqual([]);
     expect(await provider.getActiveSessions()).toEqual([]);
-    expect(await provider.getTableStats()).toEqual([]);
     expect(await provider.getIndexStats()).toEqual([]);
     expect(await provider.getStorageStats()).toEqual([]);
+  });
+
+  test("table statistics list every user table and materialized query table, the rows maintenance runs from", async () => {
+    const provider = await connected();
+    const row = (schemaName: string, tableName: string, rowCount: number) => ({
+      schemaName,
+      tableName,
+      rowCount,
+      totalSize: "N/A",
+      totalSizeBytes: 0,
+    });
+
+    expect(await provider.getTableStats()).toEqual([
+      row("APP", "CUSTOMERS", 2),
+      // CARD is -1 until RUNSTATS has run on the table.
+      row("APP", "Mixed Case", 0),
+      row("APP", "ORDERS", 2),
+      row("APP", "ORDER_TOTALS", 2),
+      row("REPORTING", "DAILY", 0),
+    ]);
+  });
+
+  test("a refused table statistics read is mapped and thrown, not answered as an empty list", async () => {
+    const provider = await connected();
+    refused.set(
+      TABLE_STATS_SQL,
+      new Error("SQL0551N  The statement failed because the authorization ID does not have the privilege"),
+    );
+    await expect(provider.getTableStats()).rejects.toThrow("SQL0551N");
   });
 });

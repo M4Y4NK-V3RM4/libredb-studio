@@ -47,7 +47,7 @@ The defects of section 4 are reported upstream at [gurungabit/db2-node#12](https
 | `catalog.ts` | The catalog SQL, and the decoders that read its rows: names, column types, object detail and source text |
 | `objects.ts` | The row mappers of the object surface |
 | `maintenance.ts` | `adminCommandTarget()`, `maintenanceStatement()` and the statement that reads a target's type |
-| `monitoring.ts` | The version and catalog-count statements, and their reads |
+| `monitoring.ts` | The version, catalog-count and table-list statements, and their reads |
 | `index.ts` | The composition root |
 
 The constructor opens nothing.
@@ -342,14 +342,16 @@ Run these from the object tree, not the editor: the editor's statement splitter 
 
 ## 9. Monitoring
 
-Only two things are read: the version, from `SYSIBMADM.ENV_INST_INFO`, and the counts of tables and indexes in `SYSCAT`.
+Only three things are read: the version, from `SYSIBMADM.ENV_INST_INFO`, the counts of tables and indexes in `SYSCAT`, and the list of user tables and materialized query tables in `SYSCAT.TABLES`.
+The table list is what Run Statistics and Reorganize Table are run from: the object tree's menu items open the admin Operations list, or the monitoring Tables panel, at the table's row.
+Each row carries the catalog's `CARD` as its row count, which is -1 until RUNSTATS has run and reads as 0 then, and no size, which reads N/A.
 Every other panel is empty on purpose in this version, and says so:
 
 - Sessions: "Db2 sessions are not read in this version of the Db2 provider."
 - Slow queries: "Db2 query statistics are not read in this version of the Db2 provider."
 
-Database size and uptime read N/A, the cache ratio reads unavailable, and the table, index and storage statistics are empty.
-No monitoring read throws.
+Database size and uptime read N/A, the cache ratio reads unavailable, and the index and storage statistics are empty.
+Only the table list can fail: a refused read is reported on that panel with the server's message, and the other panels still answer.
 
 ## 10. Agent and MCP
 

@@ -54,7 +54,7 @@ import { CODE_PAGE_SQL, decodeCatalogRow } from "./catalog";
 import { type CaFileSystem, type Db2Connection, NODE_CA_FILE_SYSTEM, openClient, resolveTarget } from "./connection";
 import { type Db2Client, type Db2Driver, loadDb2Driver } from "./driver";
 import { MAINTAINED_TABLE_TYPES, MAINTENANCE_TARGET_TYPE_SQL, maintenanceStatement } from "./maintenance";
-import { neutralHealth, readOverview } from "./monitoring";
+import { neutralHealth, readOverview, TABLE_STATS_SQL, tableStatsRow } from "./monitoring";
 import * as objects from "./objects";
 import { driverStatement, normaliseParams } from "./params";
 import { readResult } from "./values";
@@ -319,9 +319,10 @@ export class Db2Provider extends SQLBaseProvider {
     return [];
   }
 
+  /** Every user table and materialized query table; a refused read is thrown, mapped (`monitoring.ts`). */
   public async getTableStats(_options?: { schema?: string }): Promise<TableStats[]> {
-    this.connected();
-    return [];
+    const rows = await this.surface(() => this.readCatalog(TABLE_STATS_SQL, []));
+    return rows.map(tableStatsRow);
   }
 
   public async getIndexStats(_options?: { schema?: string }): Promise<IndexStats[]> {

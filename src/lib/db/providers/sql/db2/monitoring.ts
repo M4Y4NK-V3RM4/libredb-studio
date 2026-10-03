@@ -1,16 +1,17 @@
 /**
  * Db2's monitoring panels, deliberately neutral in this version (#786).
  *
- * Two readings are taken, both from places a plain user may read: the server's version, and how
- * many tables and indexes the catalog holds. Everything else answers its type's "not measured"
- * shape: no session, statement or storage reading is taken, so none is reported, and the labels
- * tell the Queries and Sessions tabs to say so rather than to suggest a server setting.
+ * Three readings are taken, all from places a plain user may read: the server's version, how
+ * many tables and indexes the catalog holds, and the list of user tables with their catalog row
+ * counts. Everything else answers its type's "not measured" shape: no session, statement or
+ * storage reading is taken, so none is reported, and the labels tell the Queries and Sessions
+ * tabs to say so rather than to suggest a server setting.
  *
  * `serverInfo()` is never used for the version: db2-node 1.0.22 answers it with the instance name
  * and `SQL12010`, not the product string (K13).
  */
 
-import type { DatabaseOverview, HealthInfo } from "@/lib/db/types";
+import type { DatabaseOverview, HealthInfo, TableStats } from "@/lib/db/types";
 import { CACHE_HIT_RATIO_UNAVAILABLE } from "@/lib/monitoring-cache-ratio";
 
 /** Runs one catalog statement and answers its rows. */
@@ -56,4 +57,35 @@ export async function readOverview(read: Db2RowReader): Promise<DatabaseOverview
 /** Nothing measured: no connection count, no size, no cache ratio, no list. */
 export function neutralHealth(): HealthInfo {
   return { databaseSize: "N/A", cacheHitRatio: CACHE_HIT_RATIO_UNAVAILABLE, slowQueries: [], activeSessions: [] };
+}
+
+/**
+ * Every user table and materialized query table, with its catalog row count.
+ *
+ * The list is what the per-table maintenance controls hang on: Run Statistics and Reorganize
+ * Table are run from a row of the admin Operations list and the monitoring Tables panel, and an
+ * empty list left both unreachable from the object tree's deep link. The types are the two
+ * `MAINTAINED_TABLE_TYPES` in `maintenance.ts`, and the schemas are the ones `CONTAINERS_SQL`
+ * lists. Names are read as HEX for K1, like every catalog name.
+ */
+export const TABLE_STATS_SQL = `SELECT HEX(RTRIM(TABSCHEMA)) AS SCHEMA_HEX, HEX(TABNAME) AS NAME_HEX, CARD
+FROM SYSCAT.TABLES
+WHERE TYPE IN ('T', 'S') AND TABSCHEMA NOT LIKE 'SYS%' AND TABSCHEMA NOT IN ('NULLID', 'SQLJ')
+ORDER BY TABSCHEMA, TABNAME`;
+
+/**
+ * One decoded `TABLE_STATS_SQL` row. `CARD` is -1 until RUNSTATS has run on the table and reads
+ * as 0 then, the way Oracle's provider reads a NULL `NUM_ROWS`, because `rowCount` is required.
+ * The catalog holds no size this provider reads, so the size is "N/A" with 0 bytes, the SQLite
+ * shape for a size that is not published.
+ */
+export function tableStatsRow(row: Record<string, unknown>): TableStats {
+  const card = Number(row.CARD);
+  return {
+    schemaName: String(row.SCHEMA),
+    tableName: String(row.NAME),
+    rowCount: card >= 0 ? card : 0,
+    totalSize: "N/A",
+    totalSizeBytes: 0,
+  };
 }
