@@ -221,7 +221,11 @@ async function everyDeclaredSourceLanguage(): Promise<
 > {
   const found: { readonly where: string; readonly language: string }[] = [];
   for (const type of [...EXTERNAL_DATABASE_TYPES, "libredb"] as readonly DatabaseType[]) {
-    const built = await createDatabaseProvider(unconnected(type));
+    // Db2 reads a stored connection string at construction and refuses one that is not db2://
+    // (#786), so it is built without the shared MongoDB string.
+    const built = await createDatabaseProvider(
+      type === "db2" ? { ...unconnected(type), connectionString: undefined } : unconnected(type),
+    );
     const provider = type === MARIADB_CAPABLE_TYPE ? withMeasuredMariaDBFlavour(built) : built;
     for (const kind of declaredKinds(provider.getCapabilities())) {
       if (kind.sourceLanguage !== undefined) found.push({ where: `${type}/${kind.id}`, language: kind.sourceLanguage });
