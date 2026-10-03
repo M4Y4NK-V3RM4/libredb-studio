@@ -158,8 +158,10 @@ The live script `tests/live/db2-known-issues.ts` probes each row against a runni
 | K16 | A GRAPHIC parameter is padded with U+0000; TIMESTAMP(12) and `Date` parameters are refused; a bind into BOOLEAN, BLOB or CLOB fails | "parameter descriptor count" | Yes for the provider's own SQL, which binds only VARCHAR-compatible values | Write the value as a literal |
 | K17 | Client-side failures carry no SQLSTATE | A protocol message only | No | Read the message |
 | K18 | A statement that starts with a block comment is refused | SQLSTATE 42612, SQLCODE -84 | Yes: the provider strips leading comments before the statement reaches the driver | Not needed |
+| K19 | A searched UPDATE or DELETE that matches no row reports -2147221503 changed rows | A negative row count | Yes: that value is read as 0, and any other negative count is reported as 0 with a warning that the count is unknown | Not needed |
 
-A result whose columns include a type K2 to K6 can corrupt carries a short integrity warning above the grid; copy and export stay available, so read the warning before you hand the rows on.
+A result with a BIGINT, DECFLOAT, BOOLEAN or XML column carries an integrity warning above the grid that names those columns, says what the driver does to them and which cast reads them correctly, and says that exported or copied rows carry the same values; copy and export stay available, so read the warning before you hand the rows on.
+TIMESTAMP(0), TIMESTAMP(12) and LOB columns need no warning, because they fail with an error instead.
 A `SELECT *` you write yourself cannot be rewritten, so K4 still applies to it.
 
 ## 5. Capabilities
@@ -194,7 +196,8 @@ The containers are the rows of `SYSCAT.SCHEMATA` whose name does not start with 
 The schema equal to `CURRENT SCHEMA` is marked as the session default.
 Catalog names are CHAR or VARCHAR padded with blanks, so every name is trimmed on its right.
 On a database whose code set is UTF-8 (1208, the default since Db2 9.5) names and column defaults are read as `HEX(...)` and decoded in the provider, so a non-ASCII identifier survives K1.
-On a database with another code set they are read as text and a non-ASCII identifier is garbled.
+The code page is read once from `SYSCAT.COLUMNS`, which a plain user can read.
+On a database with another code page an all-ASCII name reads as written, and a non-ASCII one is refused with an error that names the code page, because the provider carries no table to decode it and a guessed name could not be addressed by any statement.
 
 ### 6.2 Kinds
 
@@ -237,9 +240,10 @@ Status mapping:
 Tables, views and materialized query tables are described; every other kind answers an empty detail without a round trip.
 Columns come from `SYSCAT.COLUMNS` in `COLNO` order, the primary key from `KEYSEQ`, foreign keys from `SYSCAT.REFERENCES` joined to `SYSCAT.KEYCOLUSE` on both sides, the referenced table included in the join, and indexes from `SYSCAT.INDEXES` filtered by the table's schema, because a system-named key index lives in `SYSIBM`.
 A foreign key's referenced table is bare inside the object's schema and `SCHEMA.TABLE` across schemas.
-A column default is a CLOB in the catalog, so it is read as `VARCHAR("DEFAULT", 254)` (K7) and a longer default is cut at 254 bytes and marked as partial.
+A column default is a CLOB in the catalog, so its first 254 bytes are read as `HEX(VARCHAR(SUBSTRING("DEFAULT", 1, 254, OCTETS), 254))` beside `LENGTH("DEFAULT")` (K7).
+254 bytes is the most IBM allows a default constant; a longer default is left out of the detail rather than shown cut, because a column's detail cannot say that a default is partial and a cut expression handed to a migration is worse than none.
 
-A column's type is spelled as its declaration: `VARCHAR(n)`, `CHARACTER(n) FOR BIT DATA` for a binary character column, `DECIMAL(p,s)`, `TIMESTAMP` at the default precision 6 and `TIMESTAMP(p)` otherwise, `DECFLOAT(34)` or `DECFLOAT(16)`, and a character or graphic type declared in `CODEUNITS32` or `CODEUNITS16` keeps its string units.
+A column's type is spelled as its declaration: `VARCHAR(n)`, `CHARACTER(n) FOR BIT DATA` for a binary character column, `DECIMAL(p,s)`, `TIMESTAMP` at the default precision 6 and `TIMESTAMP(p)` otherwise, `DECFLOAT(34)` or `DECFLOAT(16)`, and a character or graphic type declared in a unit other than its default keeps that unit, because its `LENGTH` is in bytes: `VARCHAR(10 CODEUNITS32)` has `LENGTH` 40 and `STRINGUNITSLENGTH` 10 (measured), and prints as declared.
 
 `describeObjects()` describes a whole folder in four round trips: the target list, then the columns, the foreign keys and the indexes of every target at once.
 A caller-bound limit cuts the target list and says so.
@@ -247,9 +251,10 @@ A caller-bound limit cuts the target list and says so.
 ### 6.5 Source
 
 Views, materialized query tables, procedures, functions and triggers show their stored definition text, labelled "Definition".
-The text is a CLOB, so it is read as `CAST(TEXT AS VARCHAR(32672))` together with `LENGTH(TEXT)` (K7).
+The text is a CLOB, so it is read as two `HEX(VARCHAR(SUBSTRING(TEXT, start, 16336, OCTETS), 16336))` chunks together with `LENGTH(TEXT)` (K7), and the blanks `SUBSTRING` pads a short chunk with are cut off by that length.
+The obvious `CAST(TEXT AS VARCHAR(32672))` was measured and is worse than failing: on a longer text its truncation warning desynchronised the driver, which answered 36 rows of garbage for one view and "Protocol error: invalid DSS magic byte" for another.
 A definition longer than 32672 bytes is shown cut, marked partial, and carries the reason "Db2 stores this definition as a CLOB longer than 32672 bytes, and db2-node 1.0.22 cannot fetch a CLOB, so only the first 32672 bytes are shown.", because a cut text does not run.
-A non-ASCII character in a definition is garbled by K1.
+Because the chunks are read as hex and decoded in the provider, a non-ASCII character in a definition survives on a Unicode database; a cut that falls inside a character drops that character rather than showing a replacement glyph.
 
 A routine with no text is refused with a reason chosen by its `ORIGIN`:
 
@@ -315,7 +320,7 @@ For a production database, bound statements on the server, with a Db2 workload m
 
 ## 8. Maintenance
 
-Run Statistics and Reorganize Table run on one table at a time, from the table's menu in the object tree; neither is offered on a view, and there is no database-wide card, because Db2 LUW has no whole-database RUNSTATS or REORG.
+Run Statistics and Reorganize Table run on one table or materialized query table at a time, from its menu in the object tree; a view, an alias or any other kind is refused by name before anything is sent (RUNSTATS on a view answers SQLSTATE 428DY, measured), and there is no database-wide card, because Db2 LUW has no whole-database RUNSTATS or REORG.
 The provider sends each as `SYSPROC.ADMIN_CMD` inside a compound block, because a bare `CALL` fails (K9):
 
 ```sql
