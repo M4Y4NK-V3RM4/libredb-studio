@@ -295,6 +295,16 @@ export interface DatabaseConnection {
    */
   saslMechanism?: "PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512";
   /**
+   * Db2: connect with no TLS although the password then crosses the network in cleartext (#786).
+   *
+   * An explicit acceptance of a risk, and never a default. Without TLS db2-node 1.0.22 downgrades
+   * every security mechanism to SECMEC 3, user and cleartext password, in silence (K11 in
+   * `docs/providers/db2.md`), so the Db2 provider REFUSES a connection with no TLS unless this is
+   * `true`. Read by no other engine: each of those either encrypts the password itself or
+   * follows its own driver's default.
+   */
+  allowInsecureAuth?: boolean;
+  /**
    * Read no catalog when this connection opens.
    *
    * For a connection whose owner holds tens of thousands of objects, even the two cheap

@@ -56,6 +56,9 @@ export interface DatabaseUIConfig {
     // Kafka only (#1088): which SASL mechanism checks the user and password, drawn as the select
     // `fieldOptions` below declares.
     | "saslMechanism"
+    // Db2 only (#786): the consent to send the password without TLS, drawn as a checkbox while SSL
+    // Mode is disable. The provider refuses a connection with no TLS unless it is set.
+    | "allowInsecureAuth"
   )[];
   /**
    * The connection dialog's label for a field, where this engine names the field differently from
@@ -195,7 +198,7 @@ export const DB_UI_CONFIG: Record<DatabaseType, DatabaseUIConfig> = {
     label: "Db2 LUW",
     defaultPort: "50000",
     showConnectionStringToggle: false,
-    connectionFields: ["host", "port", "user", "password", "database"],
+    connectionFields: ["host", "port", "user", "password", "database", "allowInsecureAuth"],
     fieldHints: {
       password:
         "Without TLS, Db2's driver can send this password in cleartext. Turn on SSL below and use the server's TLS port.",

@@ -44,6 +44,8 @@ const MOCK_CONNECTION_FIELDS: Record<string, string[]> = {
   kafka: ["host", "port", "saslMechanism", "user", "password"],
   // No database: one connection is one cluster (#1089 6.1).
   etcd: ["host", "port", "user", "password"],
+  // The consent to a cleartext password is a field of Db2's own (#786).
+  db2: ["host", "port", "user", "password", "database", "allowInsecureAuth"],
 };
 const mockFields = (type: string): string[] =>
   MOCK_CONNECTION_FIELDS[type] ?? ["host", "port", "user", "password", "database"];
@@ -136,6 +138,56 @@ describe("useConnectionForm", () => {
     user: "app",
     createdAt: new Date(),
   };
+
+  test("Db2's consent to a cleartext password is written only while it is ticked with no TLS, and reopens (#786)", async () => {
+    const onConnect = mock((_connection: DatabaseConnection) => {});
+    const editConnection: DatabaseConnection = {
+      id: "warehouse",
+      name: "Warehouse",
+      type: "db2",
+      host: "db2.internal",
+      port: 50000,
+      user: "db2inst1",
+      password: "secret",
+      database: "TESTDB",
+      createdAt: new Date(),
+      allowInsecureAuth: true,
+    };
+    const { result, rerender } = renderHook(
+      ({ connection }) =>
+        useConnectionForm({
+          ...defaultProps,
+          editConnection: connection,
+          onConnect,
+          onTestConnection: async () => ({ success: true }),
+        }),
+      { initialProps: { connection: editConnection } },
+    );
+    expect(result.current.allowInsecureAuth).toBe(true);
+    await act(async () => {
+      await result.current.handleConnect();
+    });
+    expect(onConnect.mock.calls[0][0].allowInsecureAuth).toBe(true);
+
+    // A TLS mode makes the consent moot, and it is not sent.
+    act(() => result.current.setSSLMode("verify-full"));
+    await act(async () => {
+      await result.current.handleConnect();
+    });
+    expect(onConnect.mock.calls[1][0]).not.toHaveProperty("allowInsecureAuth");
+
+    // Unticked, it is cleared, and a connection that never consented reopens unticked.
+    act(() => {
+      result.current.setSSLMode("disable");
+      result.current.setAllowInsecureAuth(false);
+    });
+    await act(async () => {
+      await result.current.handleConnect();
+    });
+    expect(onConnect.mock.calls[2][0]).not.toHaveProperty("allowInsecureAuth");
+    rerender({ connection: { ...editConnection, allowInsecureAuth: undefined } });
+    expect(result.current.allowInsecureAuth).toBe(false);
+  });
 
   test("reopens a saved timeout and clearing it restores the default", async () => {
     const onConnect = mock((_connection: DatabaseConnection) => {});
@@ -1250,7 +1302,7 @@ describe("useConnectionForm", () => {
     expect(result.current.testResult!.message).toContain("parsed successfully");
   });
 
-  test("handlePasteConnectionString fills the Db2 fields from a db2:// URL, with ?security=SSL as require (#786)", () => {
+  test("handlePasteConnectionString fills the Db2 fields from a db2:// URL, with ?security=SSL as verified TLS (#786)", () => {
     const { result } = renderHook(() => useConnectionForm(defaultProps));
 
     act(() => {
@@ -1266,7 +1318,7 @@ describe("useConnectionForm", () => {
     expect(result.current.user).toBe("db2inst1");
     expect(result.current.password).toBe("secret");
     expect(result.current.database).toBe("TESTDB");
-    expect(result.current.sslMode).toBe("require");
+    expect(result.current.sslMode).toBe("verify-system");
     expect(result.current.testResult!.tone).toBe("success");
   });
 

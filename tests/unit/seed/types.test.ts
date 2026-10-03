@@ -402,6 +402,36 @@ describe("SeedConnectionSchema: the MCP opt-in where MCP is not offered (#1089)"
   });
 });
 
+describe("SeedConnectionSchema: Db2's consent to a cleartext password (#786)", () => {
+  const db2 = {
+    id: "warehouse",
+    name: "Warehouse",
+    type: "db2",
+    host: "db2.internal",
+    port: 50000,
+    database: "TESTDB",
+    user: "db2inst1",
+    password: "secret",
+    roles: ["*"],
+  };
+
+  // zod strips an undeclared key, so the consent would validate and vanish, and the provider would
+  // then refuse a connection whose seed file did set it.
+  it("carries the consent through validation", () => {
+    const result = SeedConnectionSchema.safeParse({ ...db2, allowInsecureAuth: true });
+
+    expect(result.success).toBe(true);
+    expect(result.data?.allowInsecureAuth).toBe(true);
+  });
+
+  it("rejects a consent that is not a boolean, naming the field", () => {
+    const result = SeedConnectionSchema.safeParse({ ...db2, allowInsecureAuth: "yes" });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((issue) => issue.path.join("."))).toEqual(["allowInsecureAuth"]);
+  });
+});
+
 describe("SeedConnectionSchema: Kafka's SASL mechanism", () => {
   const kafka = {
     id: "events",

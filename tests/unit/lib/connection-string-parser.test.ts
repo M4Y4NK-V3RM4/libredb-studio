@@ -301,14 +301,15 @@ describe("parseConnectionString", () => {
       expect(parseConnectionString("db2://user:pass@host/SAMPLE")!.port).toBe("50000");
     });
 
-    // `require`, not `verify-system`, for the reason a `rediss://` paste is: a self-hosted Db2
-    // presents a certificate from its own keystore, which a verifying mode would refuse, so the
-    // paste encrypts and verification is chosen in the panel.
+    // `verify-system`, not `require`, by D26's rule and the Db2 provider's own: without verified
+    // TLS db2-node can send the password in cleartext (K11), so TLS is verified unless a reader
+    // chooses otherwise in the panel. A self-hosted Db2 with a private CA then fails closed on the
+    // chain, and its CA certificate is what the panel asks for.
     test.each(["ssl=true", "ssl=1", "ssl=TRUE", "security=SSL", "security=ssl", "Security=SSL"])(
-      "?%s asks for TLS",
+      "?%s asks for verified TLS",
       (query) => {
         const result = parseConnectionString(`db2://u:p@host:50001/TESTDB?${query}`);
-        expect(result!.sslMode).toBe("require");
+        expect(result!.sslMode).toBe("verify-system");
         expect(result!.unmappedTLSParam).toBeUndefined();
       },
     );

@@ -133,6 +133,7 @@ const mockSetApiKeyId = mock(() => {});
 const mockSetApiKeySecret = mock(() => {});
 const mockSetSkipObjectScan = mock(() => {});
 const mockSetReadOnly = mock(() => {});
+const mockSetAllowInsecureAuth = mock(() => {});
 const mockSetSaslMechanism = mock(() => {});
 
 let mockFormOverrides: Record<string, unknown> = {};
@@ -149,6 +150,8 @@ function getDefaultForm() {
     setSkipObjectScan: mockSetSkipObjectScan,
     readOnly: false,
     setReadOnly: mockSetReadOnly,
+    allowInsecureAuth: false,
+    setAllowInsecureAuth: mockSetAllowInsecureAuth,
     readOnlyOffered: false,
     host: "localhost",
     setHost: mockSetHost,
@@ -266,6 +269,7 @@ const MOCK_CONNECTION_FIELDS: Record<string, string[]> = {
   prometheus: ["host", "port", "user", "password"],
   kafka: ["host", "port", "saslMechanism", "user", "password"],
   etcd: ["host", "port", "user", "password"],
+  db2: ["host", "port", "user", "password", "database", "allowInsecureAuth"],
 };
 const mockFields = (type: string): string[] =>
   MOCK_CONNECTION_FIELDS[type] ?? ["host", "port", "user", "password", "database"];
@@ -481,6 +485,31 @@ describe("ConnectionModal", () => {
     mockSetReadOnly.mockClear();
     fireEvent.click(getByLabelText("Read-only"));
     expect(mockSetReadOnly).toHaveBeenCalledWith(false);
+  });
+
+  test("offers Db2's consent to a cleartext password only while SSL Mode is disable, and forwards it (#786)", () => {
+    mockFormOverrides = { type: "db2", sslMode: "disable" };
+    const { getByLabelText, queryByLabelText, rerender } = render(
+      React.createElement(ConnectionModal, createDefaultProps()),
+    );
+    const box = getByLabelText("Send the password without TLS") as HTMLInputElement;
+
+    expect(box.checked).toBe(false);
+    expect(box.getAttribute("aria-describedby")).toBe("allowInsecureAuth-hint");
+    fireEvent.click(box);
+    expect(mockSetAllowInsecureAuth).toHaveBeenCalledWith(true);
+
+    mockFormOverrides = { type: "db2", sslMode: "disable", allowInsecureAuth: true };
+    rerender(React.createElement(ConnectionModal, createDefaultProps()));
+    expect((getByLabelText("Send the password without TLS") as HTMLInputElement).checked).toBe(true);
+
+    // Under a TLS mode there is nothing to consent to, and on another engine no such field.
+    mockFormOverrides = { type: "db2", sslMode: "verify-full" };
+    rerender(React.createElement(ConnectionModal, createDefaultProps()));
+    expect(queryByLabelText("Send the password without TLS")).toBeNull();
+    mockFormOverrides = { type: "postgres", sslMode: "disable" };
+    rerender(React.createElement(ConnectionModal, createDefaultProps()));
+    expect(queryByLabelText("Send the password without TLS")).toBeNull();
   });
 
   test("shows the saved query timeout when editing", () => {

@@ -465,8 +465,12 @@ describe("db-ui-config", () => {
       defaultPort: "50000",
       // A `db2://` paste fills the fields, the Oracle precedent, so no toggle is drawn.
       showConnectionStringToggle: false,
-      connectionFields: ["host", "port", "user", "password", "database"],
+      // The last is the consent to a cleartext password the provider refuses a connection with no
+      // TLS without (#786), drawn as a checkbox while SSL Mode is disable.
+      connectionFields: ["host", "port", "user", "password", "database", "allowInsecureAuth"],
     });
+    expect(takesConnectionField("db2", "allowInsecureAuth")).toBe(true);
+    expect(takesConnectionField("postgres", "allowInsecureAuth")).toBe(false);
     expect(db2.fieldHints).toEqual({
       password:
         "Without TLS, Db2's driver can send this password in cleartext. Turn on SSL below and use the server's TLS port.",
@@ -516,6 +520,7 @@ const FIELD_CHECKLIST: Record<ConnectionField, true> = {
   apiKeyId: true,
   apiKeySecret: true,
   saslMechanism: true,
+  allowInsecureAuth: true,
 };
 const EVERY_FIELD = Object.keys(FIELD_CHECKLIST) as ConnectionField[];
 
