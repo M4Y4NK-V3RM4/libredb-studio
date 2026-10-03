@@ -144,9 +144,12 @@ DUCKDB_BODY=$(curl -s -b "$WORK/cookies.txt" -X POST "$BASE/api/db/query" -H "Co
 # The third native module, db2-node (#786), against a closed port: there is no
 # Db2 server here, so the assertion is the failure class. A loaded driver gets
 # as far as the socket and reports the refusal; a missing or unloadable addon
-# never reaches it and surfaces as a module or binding error instead.
+# never reaches it and surfaces as a module or binding error instead. The
+# connection opts in to sending its password without TLS: without that the
+# provider refuses it before any socket opens, and the refusal says nothing
+# about whether the addon loaded.
 DB2_BODY=$(curl -s -b "$WORK/cookies.txt" -X POST "$BASE/api/db/query" -H "Content-Type: application/json" \
-  -d '{"connection":{"id":"engine-smoke-db2","type":"db2","name":"engine-smoke-db2","host":"127.0.0.1","port":1,"database":"TESTDB","user":"smoke","password":"smoke"},"sql":"VALUES 1"}')
+  -d '{"connection":{"id":"engine-smoke-db2","type":"db2","name":"engine-smoke-db2","host":"127.0.0.1","port":1,"database":"TESTDB","user":"smoke","password":"smoke","allowInsecureAuth":true},"sql":"VALUES 1"}')
 LAUNCHER_LOG=$(cat "$LOG")
 
 check_absent "launcher prints no runtime warning" "$LAUNCHER_LOG" "STORAGE_PROVIDER=sqlite"
