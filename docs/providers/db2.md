@@ -84,7 +84,7 @@ The version shown in the monitoring overview is `SERVICE_LEVEL` of `SYSIBMADM.EN
 
 TLS is the part of this provider to set up first.
 Without it, `db2-node` 1.0.22 downgrades the security mechanism in silence and sends the password to the server in EBCDIC cleartext, even when it is asked for an encrypted mechanism (K11).
-So the provider refuses a connection with no TLS settings, with an error that names that defect, unless the connection carries the explicit insecure opt-in, a checkbox in the connection form that says the password travels in cleartext.
+So the provider refuses a connection with no TLS settings, with an error that names that defect, unless the connection carries the explicit insecure opt-in, `allowInsecureAuth: true`, shown in the connection form as a checkbox that says the password travels in cleartext.
 Turn the opt-in on only for a database on a network you trust end to end, such as a local container.
 
 The SSL panel's modes map to `db2-node` options as follows:
