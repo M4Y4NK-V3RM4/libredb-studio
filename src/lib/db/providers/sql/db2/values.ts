@@ -162,9 +162,10 @@ export function readResult(result: Db2QueryResult): Omit<QueryResult, "execution
  *   exact text, and no DECFLOAT or BOOLEAN left in the row to corrupt its INTEGERs (K2, K3, K6,
  *   K8). `CHAR(bigint)` reads exactly too but pads with a blank.
  * - A CHAR or VARCHAR reads as `VARGRAPHIC(column)`, which the driver decodes as UTF-16, so
- *   `Grüße, 世界 😀` arrives whole where the plain column arrives as EBCDIC mojibake (K1). Only up
- *   to a declared 9999 bytes, or 999 CODEUNITS32 characters: a value longer than VARGRAPHIC's
- *   16336 units raises a truncation warning, and the driver answers that with rows of garbage.
+ *   `Grüße, 世界` followed by a four-byte character arrives whole where the plain column arrives
+ *   as EBCDIC mojibake (K1). Only up to a declared 9999 bytes, or 999 CODEUNITS32 characters: a
+ *   value longer than VARGRAPHIC's 16336 units raises a truncation warning, and the driver
+ *   answers that with rows of garbage.
  *   Unicode databases only; in another code page VARGRAPHIC of a single-byte string is refused,
  *   which `docs/providers/db2.md` records.
  * - A LOB and XML are left out. The driver cannot fetch a LOB (K7), and `XMLSERIALIZE(... AS
