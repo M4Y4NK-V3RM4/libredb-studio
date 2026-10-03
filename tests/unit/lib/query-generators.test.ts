@@ -22,6 +22,7 @@ import { CENSUS_CONNECTION } from "../../helpers/census-connection";
 import { SHIPPED_DATABASE_TYPES } from "@/lib/db/compatibility";
 import { createDatabaseProvider } from "@/lib/db/factory";
 import { declaredLevels } from "@/lib/db/object-kinds";
+import { db2Capabilities } from "@/lib/db/providers/sql/db2/capabilities";
 
 // ============================================================================
 // Helpers
@@ -1150,6 +1151,24 @@ describe("the generated statement addresses an object by its path", () => {
     const out = generateSelectQuery(["APP", "APP_CUSTOMERS"], sampleColumns, oracleCaps);
     expect(out.endsWith(";")).toBe(false);
     expect(out).toBe('SELECT\n  "id",\n  "name"\nFROM APP.APP_CUSTOMERS\nWHERE 1=1\nFETCH FIRST 100 ROWS ONLY');
+  });
+
+  // --- D. Db2 (#786): no generator arm, the declaration is the whole story ----
+
+  // Read off the provider's own declaration rather than a fixture, so a change to it moves these.
+  // Both statements were run through db2-node on Db2 LUW 12.1.0.0 against `APP.CUSTOMERS` (with its
+  // own upper-case `ID` and `NAME`): a trailing `;` and `LIMIT n` are both accepted, so no
+  // terminator or limit arm is needed.
+  const db2Caps = db2Capabilities(makeCaps());
+
+  test("Db2 quotes an upper-case name, which is how its catalog stores one", () => {
+    expect(generateTableQuery(["APP", "CUSTOMERS"], db2Caps)).toBe('SELECT * FROM "APP"."CUSTOMERS";');
+  });
+
+  test("Generate Query on Db2 bounds with LIMIT", () => {
+    expect(generateSelectQuery(["APP", "CUSTOMERS"], sampleColumns, db2Caps)).toBe(
+      'SELECT\n  id,\n  name\nFROM "APP"."CUSTOMERS"\nWHERE 1=1\nLIMIT 100;',
+    );
   });
 
   // --- an address with no segments is refused rather than spelled ----------

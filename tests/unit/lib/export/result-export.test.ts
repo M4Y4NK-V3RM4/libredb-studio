@@ -439,6 +439,16 @@ describe("buildResultExport — a binary value in a statement", () => {
     expect(file.content).not.toContain("X'");
   });
 
+  // Db2's `X'…'` is a CHARACTER string (FOR BIT DATA), not a binary one. Measured on Db2 LUW
+  // 12.1.0.0 (#786): `X'0102deadbeef'` into a `BLOB` or a `VARBINARY` column is SQL0408N, a value
+  // not compatible with the target, while `BX'0102deadbeef'` goes into `BLOB`, `VARBINARY` and
+  // `VARCHAR FOR BIT DATA` alike and reads back as `HEX(...)` = `0102DEADBEEF`.
+  test("writes Db2's BX'…', because its X'…' is a character string", () => {
+    const file = buildResultExport("sql-insert", source({ ...binaryRow(wire), dialect: "db2" }));
+
+    expect(file.content).toContain("VALUES (BX'0102deadbeef');");
+  });
+
   test("writes ClickHouse's unhex", () => {
     const file = buildResultExport("sql-insert", source({ ...binaryRow(wire), dialect: "clickhouse" }));
 
@@ -474,6 +484,10 @@ describe("buildResultExport — a binary value in a statement", () => {
     );
     expect(buildResultExport("sql-insert", source({ ...binaryRow(empty), dialect: "oracle" })).content).toContain(
       "VALUES (HEXTORAW(''));",
+    );
+    // `BX''` inserts a zero-length value into all three Db2 byte types, measured (#786).
+    expect(buildResultExport("sql-insert", source({ ...binaryRow(empty), dialect: "db2" })).content).toContain(
+      "VALUES (BX'');",
     );
     // `unhex('')` really inserts the zero-length blob on DuckDB: measured, the row
     // reads back with `octet_length(payload)` 0 rather than NULL.

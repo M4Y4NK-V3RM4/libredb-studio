@@ -59,6 +59,7 @@ export const CENSUS_CONNECTION: Readonly<Record<DatabaseType, DatabaseConnection
   libsql: unconnected("libsql"),
   duckdb: unconnected("duckdb"),
   oracle: unconnected("oracle"),
+  db2: unconnected("db2"),
   mssql: unconnected("mssql"),
   clickhouse: unconnected("clickhouse"),
   druid: unconnected("druid"),

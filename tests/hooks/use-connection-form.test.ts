@@ -1250,6 +1250,26 @@ describe("useConnectionForm", () => {
     expect(result.current.testResult!.message).toContain("parsed successfully");
   });
 
+  test("handlePasteConnectionString fills the Db2 fields from a db2:// URL, with ?security=SSL as require (#786)", () => {
+    const { result } = renderHook(() => useConnectionForm(defaultProps));
+
+    act(() => {
+      result.current.setPasteInput("db2://db2inst1:secret@db2.example.com:50001/TESTDB?security=SSL");
+    });
+    act(() => {
+      result.current.handlePasteConnectionString();
+    });
+
+    expect(result.current.type).toBe("db2");
+    expect(result.current.host).toBe("db2.example.com");
+    expect(result.current.port).toBe("50001");
+    expect(result.current.user).toBe("db2inst1");
+    expect(result.current.password).toBe("secret");
+    expect(result.current.database).toBe("TESTDB");
+    expect(result.current.sslMode).toBe("require");
+    expect(result.current.testResult!.tone).toBe("success");
+  });
+
   test("handlePasteConnectionString keeps the TLS intent of a pasted https ClickHouse URL", () => {
     // A ClickHouse Cloud endpoint is the common case. Losing the scheme here sends a
     // plaintext POST to the TLS port, which fails with a bare "fetch failed".
@@ -1471,6 +1491,8 @@ describe("useConnectionForm", () => {
     expect(result.current.testResult).not.toBeNull();
     expect(result.current.testResult!.tone).toBe("error");
     expect(result.current.testResult!.message).toContain("Could not parse");
+    // The list of formats it names includes every scheme the parser reads, `db2://` among them (#786).
+    expect(result.current.testResult!.message).toContain("db2://");
   });
 
   // ── environment defaults to 'local' ────────────────────────────────────────
@@ -1538,6 +1560,7 @@ describe("useConnectionForm", () => {
     mysql: true,
     sqlite: true,
     oracle: true,
+    db2: true,
     mssql: true,
     mongodb: true,
     redis: true,

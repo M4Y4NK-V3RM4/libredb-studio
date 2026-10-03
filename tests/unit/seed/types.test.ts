@@ -112,6 +112,7 @@ describe("SeedConnectionSchema", () => {
       "mongodb",
       "redis",
       "oracle",
+      "db2",
       "mssql",
       "libredb",
       "couchbase",

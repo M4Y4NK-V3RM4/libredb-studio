@@ -304,6 +304,13 @@ const MOCK_FIELD_COPY: Record<string, MockFieldCopy> = {
     },
     showSshTunnel: false,
   },
+  // Mirrored from the real entry (#786); tests/unit/lib/db-ui-config.test.ts pins the real one.
+  db2: {
+    fieldHints: {
+      password:
+        "Without TLS, Db2's driver can send this password in cleartext. Turn on SSL below and use the server's TLS port.",
+    },
+  },
   // Mirrored from the real entry (#1089 6.1); tests/unit/lib/db-ui-config.test.ts pins the real one.
   etcd: {
     fieldHints: {
@@ -796,6 +803,8 @@ describe("ConnectionModal", () => {
     const props = createDefaultProps();
     const { queryByText } = render(React.createElement(ConnectionModal, props));
     expect(queryByText(/postgres:\/\//)).not.toBeNull();
+    // A `db2://` paste fills the fields (#786), so the list names it too.
+    expect(queryByText(/db2:\/\//)).not.toBeNull();
   });
 
   // ── 29b. verify-system is offered, and says what it verifies (D26) ──────
@@ -1400,6 +1409,7 @@ describe("ConnectionModal", () => {
       ["mysql", "mysql", {}, NETWORKED, {}],
       ["redis", "redis", {}, NETWORKED, {}],
       ["oracle", "oracle", {}, NETWORKED, {}],
+      ["db2", "db2", {}, NETWORKED, MOCK_FIELD_COPY.db2.fieldHints ?? {}],
       ["mssql", "mssql", {}, NETWORKED, {}],
       ["clickhouse", "clickhouse", {}, NETWORKED, {}],
       ["mongodb", "mongodb", {}, { ...NETWORKED, authSource: "Authentication Database" }, {}],

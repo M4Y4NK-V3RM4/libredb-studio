@@ -367,7 +367,7 @@ export function ConnectionModal({
                   </Button>
                 </div>
                 <p className="text-xs text-fg-muted">
-                  Supports: postgres://, mysql://, mongodb://, redis://, oracle://, mssql://
+                  Supports: postgres://, mysql://, mongodb://, redis://, oracle://, mssql://, db2://
                 </p>
               </div>
             </motion.div>

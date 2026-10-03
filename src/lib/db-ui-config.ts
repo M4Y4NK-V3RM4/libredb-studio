@@ -20,6 +20,7 @@ import {
   PrometheusIcon,
   KafkaIcon,
   EtcdIcon,
+  Db2Icon,
 } from "@/components/icons/db-icons";
 import type { DatabaseType } from "@/lib/types";
 
@@ -184,6 +185,21 @@ export const DB_UI_CONFIG: Record<DatabaseType, DatabaseUIConfig> = {
     defaultPort: "1521",
     showConnectionStringToggle: false,
     connectionFields: ["host", "port", "user", "password", "database", "serviceName"],
+  },
+  // IBM Db2 LUW (#786). No connection-string toggle: a `db2://` paste fills the fields, the Oracle
+  // precedent. The password hint is there because the driver's default security mechanism can send
+  // the password in cleartext when the connection has no TLS.
+  db2: {
+    icon: Db2Icon,
+    color: "text-hue-purple",
+    label: "Db2 LUW",
+    defaultPort: "50000",
+    showConnectionStringToggle: false,
+    connectionFields: ["host", "port", "user", "password", "database"],
+    fieldHints: {
+      password:
+        "Without TLS, Db2's driver can send this password in cleartext. Turn on SSL below and use the server's TLS port.",
+    },
   },
   mssql: {
     icon: MSSQLIcon,

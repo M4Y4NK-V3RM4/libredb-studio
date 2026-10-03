@@ -51,6 +51,7 @@ const SeedDatabaseType = z.enum([
   "mongodb",
   "redis",
   "oracle",
+  "db2",
   "mssql",
   "libredb",
   "couchbase",

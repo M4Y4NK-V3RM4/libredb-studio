@@ -25,6 +25,11 @@ export type DatabaseType =
   | "redis"
   | "oracle"
   | "mssql"
+  // IBM Db2 for Linux, UNIX and Windows (issue #786), reached over DRDA through the pure
+  // JavaScript `db2-node` driver, so no IBM client library is installed anywhere. Db2 for z/OS
+  // and Db2 for IBM i speak the same protocol and are out of scope: neither has been connected
+  // to, and their catalogs are not the `SYSCAT` views this provider reads.
+  | "db2"
   | "libredb"
   | "couchbase"
   | "clickhouse"

@@ -18,8 +18,8 @@ describe("the Phase 3 census expectation", () => {
   test("the set is five pairs on four engines, etcd's key the fifth (#1089)", () => {
     expect(EXPECTED_EDITABLE_KINDS.length).toBe(5);
     expect(new Set(EXPECTED_EDITABLE_KINDS.map(([type]) => type)).size).toBe(4);
-    expect(EXPECTED_EDIT_ABSTAINERS.length).toBe(16);
-    expect(EDIT_CENSUS_TYPES.length).toBe(20);
+    expect(EXPECTED_EDIT_ABSTAINERS.length).toBe(17);
+    expect(EDIT_CENSUS_TYPES.length).toBe(21);
   });
 
   test("no pair is written twice", () => {
