@@ -41,17 +41,17 @@ The defects of section 4 are reported upstream at [gurungabit/db2-node#12](https
 |---|---|
 | `capabilities.ts` | `DB2_CONTAINER_LEVELS`, `DB2_OBJECT_KINDS`, `db2Capabilities`, `db2Labels`: pure data, no driver import |
 | `driver.ts` | The `Db2Driver` types, `loadDb2Driver()`, the one `import("db2-node")`, and `describeDriverAbsence()` |
-| `connection.ts` | `resolveTarget()`, `buildClientOptions()`, the TLS mapping and the CA temp-file lifecycle |
+| `connection.ts` | `resolveTarget()`, `assertTransport()`, `clientOptions()` and `openClient()`: the TLS mapping and the CA temp-file lifecycle |
 | `params.ts` | `normaliseParams()`, which keeps a `bigint` away from the driver (K10) |
-| `values.ts` | `db2TypeName()`, `db2ColumnTypes()` and `readResult()` |
-| `catalog.ts` | Every SQL string the provider sends, and no logic |
+| `values.ts` | `db2TypeName()`, `readResult()` and `DB2_PREVIEW_PROJECTION` |
+| `catalog.ts` | The catalog SQL, and the decoders that read its rows: names, column types, object detail and source text |
 | `objects.ts` | The row mappers of the object surface |
-| `maintenance.ts` | `adminCommandTarget()` and `buildMaintenanceSql()` |
-| `monitoring.ts` | The version and catalog-count reads |
+| `maintenance.ts` | `adminCommandTarget()`, `maintenanceStatement()` and the statement that reads a target's type |
+| `monitoring.ts` | The version and catalog-count statements, and their reads |
 | `index.ts` | The composition root |
 
 The constructor opens nothing.
-`connect()` resolves the target, writes the CA file when one is given, loads the driver and opens one `Client`; there is no pool.
+`connect()` resolves the target, checks the transport, loads the driver, writes the CA file when one is given and opens one `Client`; there is no pool.
 `disconnect()` closes that client, removes the CA file and its directory, and marks the provider disconnected.
 A deployment without the driver answers `describeDriverAbsence()`'s message, "Db2 is not available in this deployment: the db2-node driver is not installed. Install it, or use an image that ships it, to open Db2 connections.", and every other engine keeps working.
 
@@ -64,7 +64,8 @@ A deployment without the driver answers `describeDriverAbsence()`'s message, "Db
 | Host | Yes | "Host is required for Db2" |
 | Port | No | `50000`, Db2's conventional DRDA listener |
 | Database | Yes | "Database name is required for Db2" |
-| User, Password | Yes | Sent in cleartext without TLS (K11), see section 3.3 |
+| User | Yes | "User is required for Db2" |
+| Password | No | Sent empty when none is given; sent in cleartext without TLS (K11), see section 3.3 |
 | SSL panel | Yes, unless you opt out | Section 3.3 |
 
 A pasted `db2://user:password@host:50000/TESTDB` fills the fields; there is no connection-string toggle, the Oracle precedent.
@@ -200,7 +201,8 @@ The application's query timeout is not forwarded to Db2, because the driver's ow
 
 The containers are the rows of `SYSCAT.SCHEMATA` whose name does not start with `SYS` and is not `NULLID` or `SQLJ`, sorted by name.
 The schema equal to `CURRENT SCHEMA` is marked as the session default.
-Catalog names are CHAR or VARCHAR padded with blanks, so every name is trimmed on its right.
+Schema names are stored blank-padded in the catalog (`SCHEMANAME` arrives as `"APP     "`), so every schema column is trimmed on its right.
+Every other name is read as stored, so an object name that ends in a blank keeps it.
 On a database whose code set is UTF-8 (1208, the default since Db2 9.5) names and column defaults are read as `HEX(...)` and decoded in the provider, so a non-ASCII identifier survives K1.
 The code page is read once from `SYSCAT.COLUMNS`, which a plain user can read.
 On a database with another code page an all-ASCII name reads as written, and a non-ASCII one is refused with an error that names the code page, because the provider carries no table to decode it and a guessed name could not be addressed by any statement.
