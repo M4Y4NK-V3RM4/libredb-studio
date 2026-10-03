@@ -166,6 +166,10 @@ const DIALECT_TYPES: Partial<Record<DatabaseType, Partial<Record<InferredKind, s
   // 'PRECISION'`, while `DOUBLE`, `TEXT`, `BIGINT`, `BOOLEAN`, `TIMESTAMP` and `BLOB`
   // are all whole type names.
   cassandra: { numeric: "DOUBLE" },
+  // Db2 has no TEXT: measured on 12.1.0.0, `CREATE TABLE ... (c TEXT)` is SQL0204N `"TEXT" is an
+  // undefined name`, while BIGINT, DOUBLE PRECISION, BOOLEAN, TIMESTAMP and BLOB are whole types.
+  // CLOB, the unbounded character type, rather than a VARCHAR whose bound a cell could pass (#786).
+  db2: { text: "CLOB" },
   oracle: {
     text: "VARCHAR2(4000)",
     integer: "NUMBER(19)",

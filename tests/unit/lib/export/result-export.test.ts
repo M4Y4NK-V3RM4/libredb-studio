@@ -232,6 +232,19 @@ describe("buildResultExport — a DDL type the engine can actually parse", () =>
     expect(file.content).toContain('"at" TIMESTAMP');
   });
 
+  test("spells text the way Db2 takes it back, and keeps the standard spellings it accepts (#786)", () => {
+    // Measured on Db2 12.1.0.0: TEXT is SQL0204N "TEXT" is an undefined name, while BIGINT,
+    // DOUBLE PRECISION, BOOLEAN and TIMESTAMP are whole Db2 types.
+    const file = buildResultExport("sql-ddl", source({ rows: [row], fields, dialect: "db2" }));
+
+    expect(file.content).toContain('"t" CLOB');
+    expect(file.content).not.toContain("TEXT");
+    expect(file.content).toContain('"i" BIGINT');
+    expect(file.content).toContain('"n" DOUBLE PRECISION');
+    expect(file.content).toContain('"b" BOOLEAN');
+    expect(file.content).toContain('"at" TIMESTAMP');
+  });
+
   test("spells every inferred type the way SQL Server does", () => {
     const file = buildResultExport("sql-ddl", source({ rows: [row], fields, dialect: "mssql" }));
 
