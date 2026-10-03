@@ -11,7 +11,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 
 const ROOT = join(import.meta.dir, "..", "..", "..", "..");
 const SRC = join(ROOT, "src");
@@ -33,7 +33,7 @@ describe("the db2-node seam", () => {
   test("only driver.ts imports db2-node anywhere under src/", () => {
     const importers = sources(SRC)
       .filter((file) => IMPORTS_DRIVER.test(readFileSync(file, "utf8")))
-      .map((file) => relative(ROOT, file));
+      .map((file) => relative(ROOT, file).split(sep).join("/"));
 
     expect(importers).toEqual(["src/lib/db/providers/sql/db2/driver.ts"]);
   });

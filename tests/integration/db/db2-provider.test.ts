@@ -10,6 +10,8 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ConnectionError, DatabaseConfigError, QueryError } from "@/lib/db/errors";
 import {
   callerBoundTruncationReason,
@@ -620,13 +622,13 @@ describe("Db2Provider: connect and disconnect", () => {
       ssl: true,
       rejectUnauthorized: true,
       sslClientHostnameValidation: "Basic",
-      caCert: expect.stringMatching(/libredb-db2-test\/ca\.pem$/),
+      caCert: join(tmpdir(), "libredb-db2-test", "ca.pem"),
     });
 
     await provider.disconnect();
     expect(provider.isConnected()).toBe(false);
     expect(closed).toBe(1);
-    expect(removed).toEqual([expect.stringMatching(/libredb-db2-test$/)]);
+    expect(removed).toEqual([join(tmpdir(), "libredb-db2-test")]);
   });
 
   test("a connection with no TLS and no consent is refused before the driver is reached", async () => {

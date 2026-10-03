@@ -8,6 +8,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { ConnectionError, DatabaseConfigError } from "@/lib/db/errors";
 import {
   type CaFileSystem,
@@ -318,8 +320,8 @@ describe("writeCaFile", () => {
     const { fs, calls } = memoryFs();
     const written = await writeCaFile(PEM, fs);
 
-    expect(written.dir).toMatch(/libredb-db2-abc$/);
-    expect(written.file).toBe(`${written.dir}/ca.pem`);
+    expect(written.dir).toBe(join(tmpdir(), "libredb-db2-abc"));
+    expect(written.file).toBe(join(written.dir, "ca.pem"));
     expect(calls).toEqual([
       expect.stringMatching(/^mkdtemp .*libredb-db2-$/),
       `writeFile ${written.file} ${PEM.length} 600`,
@@ -340,11 +342,30 @@ describe("writeCaFile", () => {
     const written = await writeCaFile(PEM);
     const { readFile, stat } = await import("node:fs/promises");
 
+    expect(dirname(written.dir)).toBe(tmpdir());
+    expect(written.file).toBe(join(written.dir, "ca.pem"));
     expect(await readFile(written.file, "utf8")).toBe(PEM);
-    expect((await stat(written.file)).mode & 0o777).toBe(0o600);
     await NODE_CA_FILE_SYSTEM.rm(written.dir, { recursive: true, force: true });
     await expect(stat(written.dir)).rejects.toThrow();
   });
+
+  // Named in the title rather than returned early from the body, the way
+  // tests/unit/lib/auth-bootstrap.test.ts does it. On Windows, Node maps the mode to the
+  // read-only attribute alone and reports 0o666, so the privacy there is the per-user ACL on
+  // the temp directory, which the test above pins as the parent.
+  test.skipIf(process.platform === "win32")(
+    "the real file system keeps the directory 0700 and the file 0600 (POSIX only: NTFS has no mode bits)",
+    async () => {
+      const written = await writeCaFile(PEM);
+      const { stat } = await import("node:fs/promises");
+      try {
+        expect((await stat(written.dir)).mode & 0o777).toBe(0o700);
+        expect((await stat(written.file)).mode & 0o777).toBe(0o600);
+      } finally {
+        await NODE_CA_FILE_SYSTEM.rm(written.dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 /** A driver whose client records its options and connects, or fails as told. */
@@ -373,8 +394,8 @@ describe("openClient", () => {
     const { driver, built } = fakeDriver();
     const opened = await openClient(connection(), async () => driver, fs);
 
-    expect(opened.caDir).toMatch(/libredb-db2-abc$/);
-    expect(built[0].caCert).toBe(`${opened.caDir}/ca.pem`);
+    expect(opened.caDir).toBe(join(tmpdir(), "libredb-db2-abc"));
+    expect(built[0].caCert).toBe(join(tmpdir(), "libredb-db2-abc", "ca.pem"));
     expect(calls).toHaveLength(2);
   });
 
