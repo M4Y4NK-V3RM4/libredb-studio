@@ -28,7 +28,7 @@ None of it is a GitHub issue.
 **Sections**
 
 - [SQL statement reading](#sql-statement-reading) — S2–S6 · 4
-- [Drivers and connections](#drivers-and-connections) — D1-D139, U17 · 83
+- [Drivers and connections](#drivers-and-connections) — D1-D144, U17 · 88
 - [Value interpolation](#value-interpolation) — V1
 - [Row editing](#row-editing) — R1–R3 · 3
 - [Studio UI and query execution](#studio-ui-and-query-execution) — X2-X19, U2-U71 · 58
@@ -1995,6 +1995,51 @@ Not fixed there: the SQLite provider is outside that PR.
 
 **Done when:** a statement that changes no row reports no changed rows on both SQLite drivers, read from the statement itself rather than the connection's last count, and a test runs a `DELETE` then a `CREATE TABLE` on one connection and pins the second answer.
 
+### D140. Db2 inline row edit, data import and Create Table are off until db2-node decodes non-ASCII text
+
+`db2-node` 1.0.22 decodes a CHAR or VARCHAR value holding any non-ASCII byte as EBCDIC 037, so a read-then-write-back stores corrupted text ([gurungabit/db2-node#12](https://github.com/gurungabit/db2-node/issues/12), K1 in `docs/providers/db2.md`).
+So no kind in `DB2_OBJECT_KINDS` (`src/lib/db/providers/sql/db2/capabilities.ts`) declares `acceptsRowWrites`, and `db2Capabilities` sets `supportsInlineRowEdit` and `supportsCreateTable` to false, which also closes the data import dialog.
+Create Table needs a Db2 row of column types as well: Db2 refuses the `TEXT` type the PostgreSQL row would emit (SQL0204N).
+
+Found 2026-10-03 by the Db2 provider's driver spike (#786).
+
+**Done when:** a `db2-node` release reads "Grüße" back as written on Db2 12.1 and 11.5, `tests/live/db2-known-issues.ts` prints `GONE` for K1, and Db2 declares `acceptsRowWrites` on its table kind, `supportsInlineRowEdit` and `supportsCreateTable`, with a measured column-type row and an import round trip of non-ASCII text in the provider tests.
+
+### D141. Db2 monitoring reads only the version and two catalog counts
+
+`src/lib/db/providers/sql/db2/monitoring.ts` reads the service level and the table and index counts, and answers every other panel empty with a label that says so.
+The #787 branch carried measured SQL for sessions (`MON_GET_CONNECTION`), slow queries (`MON_GET_PKG_CACHE_STMT`, which is empty unless `mon_req_metrics` or `mon_act_metrics` is on), buffer-pool hit ratio, storage, uptime, deadlocks and index statistics, measured on Db2 11.5 through `ibm_db`.
+
+Found 2026-10-03 while scoping the Db2 provider's first version (#786).
+
+**Done when:** each panel is read through `db2-node`, re-measured on 12.1 and 11.5, refused reads answer an empty panel rather than throwing, and `docs/providers/db2.md` section 9 names what each panel reads.
+
+### D142. The Db2 schema diff writes a column modification as a comment
+
+`NO_COLUMN_MODIFICATION` in `src/lib/schema-diff/migration-generator.ts` holds `db2`, because Db2 changes a column with `ALTER TABLE ... ALTER COLUMN ... SET DATA TYPE` and may leave the table REORG-pending, after which most statements on it fail with SQL0668N until a REORG.
+The #787 branch drafted a branch that emits `SET DATA TYPE`, `SET`/`DROP NOT NULL` and `SET`/`DROP DEFAULT` with a REORG advisory comment, never measured live.
+
+Found 2026-10-03 while scoping the Db2 provider's first version (#786).
+
+**Done when:** the column modification is expressed through a declared capability rather than a `dialect === "db2"` branch, each statement it emits runs on Db2 12.1 against the fixture, the REORG-pending advisory names the table, and `tests/unit/schema-diff/migration-generator.test.ts` moves `db2` out of the comment-only coverage.
+
+### D143. Db2 has no transactions, SANDBOX or query cancel
+
+`db2Capabilities` sets `supportsTransactions` to false and the provider implements no `cancelQuery`: it holds one `Client` with no session of its own for a transaction, and `db2-node` 1.0.22 offers no interrupt, since `close()` waits for the running statement and `queryTimeout` leaves the statement running on the server (K14 in `docs/providers/db2.md`).
+
+Found 2026-10-03 by the Db2 provider's driver spike (#786).
+
+**Done when:** a driver release offers a real interrupt or a server-side cancel the provider can send on a second connection, the provider implements `cancelQuery` and the transaction lifecycle on a held connection, and a live test cancels a long statement and sees it end on the server.
+
+### D144. Windows channels and the Visual C++ runtime the Db2 addon needs
+
+The win32 addon of `db2-node` imports `VCRUNTIME140.dll`, so a Windows machine without the Microsoft Visual C++ 2015-2022 x64 redistributable cannot load the Db2 driver.
+winget and Chocolatey declare it as a dependency; the portable zip, Scoop and `npx @libredb/studio` on Windows rely on the machine having it, and nothing has been measured on a clean Windows install.
+
+Found 2026-10-03 while packaging the Db2 provider (#786).
+
+**Done when:** a clean Windows 11 VM without the redistributable is measured on every Windows channel, each channel either installs the runtime or says what to install before the first Db2 connection, and a missing runtime reaches the user as a sentence naming it rather than a load error.
+
 ## Value interpolation
 
 ### V1. Query history records the placeholders, not the values that were bound
@@ -2977,7 +3022,7 @@ Found 2026-09-30 while designing the etcd provider (#1089, spec E10).
 ### U58. TablesTab's Vacuum summary card reads 0 and "OK" on an engine that declares no vacuum
 
 `vacuumStateKnown` ignores `vacuumSupported` (`src/components/monitoring/tabs/TablesTab.tsx`, where the card reads it), so on an engine that supports maintenance and declares no `vacuum` the card counts the tables whose `bloatRatio` passes 10 as if the engine had a vacuum.
-Nine engines declare `supportsMaintenance: true`, set or inherited from `BaseDatabaseProvider.getCapabilities()`, with no `vacuum` among their `maintenanceOperations`: MySQL, libSQL, Oracle, SQL Server, ClickHouse, Trino, Redis and Couchbase today, and etcd after the etcd PR.
+Ten engines declare `supportsMaintenance: true`, set or inherited from `BaseDatabaseProvider.getCapabilities()`, with no `vacuum` among their `maintenanceOperations`: MySQL, libSQL, Oracle, SQL Server, ClickHouse, Trino, Redis, Couchbase and etcd today, and Db2 LUW after the Db2 PR (#786), which reads no table statistics in its first version.
 All but MySQL publish no `bloatRatio`, so their card shows 0 with a green "OK" wherever the tab has table statistics to read; Redis answers none, so its card reads that only while its database is empty, and N/A once the database holds a key.
 MySQL's `bloatRatio` is `DATA_FREE` as a percentage of the table's data and index bytes, so its card counts the tables past 10 percent under the Vacuum title, a count the fix takes off the card too.
 Reproduce: render `TablesTab` with the capabilities `POST /api/db/provider-meta` serves for libSQL, Oracle or SQL Server and the statistics of one table, or open the Tables tab on one of them over a database that holds a table, and read the Vacuum card.
