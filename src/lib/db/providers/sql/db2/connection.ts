@@ -135,6 +135,15 @@ export function resolveTarget(config: Db2Connection): Db2Target {
   }
   const tls = structured ?? url.tls;
   const verifiesChain = tls === "verify-ca" || tls === "verify-full";
+  // verify-ca sends `sslClientHostnameValidation: "OFF"`, so with no CA of its own it would take
+  // any certificate the system trust store chains, issued for any name, and hand it the password.
+  if (tls === "verify-ca" && !ssl?.caCert) {
+    throw new DatabaseConfigError(
+      'TLS mode "verify-ca" checks the certificate against a CA and not the server\'s name, so it needs the ' +
+        "server's CA certificate under SSL / TLS; without one, use verify-full or verify-system.",
+      "db2",
+    );
+  }
 
   return {
     host,

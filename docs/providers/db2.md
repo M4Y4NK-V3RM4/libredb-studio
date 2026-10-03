@@ -100,7 +100,8 @@ The SSL panel's modes map to `db2-node` options as follows:
 | Verify full | `ssl: true, rejectUnauthorized: true, caCert: <file>, sslClientHostnameValidation: "Basic"` | The chain and the host name |
 
 Verification is the default once TLS is on; "Require" is a separate choice you make on purpose.
-Verify CA or Verify full without a CA certificate uses the system trust store with the same host-name setting.
+Verify full without a CA certificate checks the chain against the system trust store, and the host name as before.
+Verify CA without a CA certificate is refused: it checks no host name, so against the system trust store it would accept any publicly trusted certificate, issued for any name, and send it the password.
 The panel holds the CA as PEM text and `db2-node` wants a file path, so the provider writes the PEM to `ca.pem` in a fresh `libredb-db2-` directory under the system temp directory, mode 0600, on connect, and removes the directory on disconnect and on a failed connect.
 A client certificate or key is refused with "db2-node 1.0.22 has no client-certificate authentication; remove the client certificate and key from this Db2 connection.", never ignored.
 

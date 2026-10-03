@@ -74,7 +74,23 @@ describe("resolveTarget", () => {
     expect(resolveTarget(connection({ ssl: { mode: "require", caCert: PEM } }))).not.toHaveProperty("caPem");
     expect(resolveTarget(connection({ ssl: { mode: "verify-system", caCert: PEM } }))).not.toHaveProperty("caPem");
     expect(resolveTarget(connection({ ssl: { mode: "verify-ca", caCert: PEM } })).caPem).toBe(PEM);
-    expect(resolveTarget(connection({ ssl: { mode: "verify-ca" } }))).not.toHaveProperty("caPem");
+    expect(resolveTarget(connection({ ssl: { mode: "verify-full" } }))).not.toHaveProperty("caPem");
+  });
+
+  // verify-ca turns the host-name check off, so with no CA of its own it would accept any
+  // certificate the system trust store chains, for any name, and send the password to it.
+  test("verify-ca with no CA certificate is refused", () => {
+    for (const overrides of [
+      { ssl: { mode: "verify-ca" as SSLMode } },
+      { ssl: { mode: "verify-ca" as SSLMode, caCert: "" } },
+    ]) {
+      const error = refusal(() => resolveTarget(connection(overrides)));
+      expect(error).toBeInstanceOf(DatabaseConfigError);
+      expect(error.message).toBe(
+        'TLS mode "verify-ca" checks the certificate against a CA and not the server\'s name, so it needs the ' +
+          "server's CA certificate under SSL / TLS; without one, use verify-full or verify-system.",
+      );
+    }
   });
 
   test.each([
@@ -160,9 +176,9 @@ describe("resolveTarget", () => {
       expect(
         resolveTarget(connection({ connectionString: "db2://u:p@h/DB?ssl=true", ssl: { mode: "verify-system" } })).tls,
       ).toBe("verify-system");
-      expect(resolveTarget(connection({ connectionString: "db2://u:p@h/DB", ssl: { mode: "verify-ca" } })).tls).toBe(
-        "verify-ca",
-      );
+      expect(
+        resolveTarget(connection({ connectionString: "db2://u:p@h/DB", ssl: { mode: "verify-ca", caCert: PEM } })).tls,
+      ).toBe("verify-ca");
     });
 
     test("through a tunnel the dial address is the tunnel's local end, never the string's", () => {
@@ -201,7 +217,7 @@ describe("assertTransport (fail closed)", () => {
   test.each(["require", "verify-system", "verify-ca", "verify-full"] as SSLMode[])(
     "TLS mode %s needs no opt-in",
     (mode) => {
-      const config = connection({ ssl: { mode } });
+      const config = connection({ ssl: { mode, caCert: PEM } });
       expect(() => assertTransport(config, resolveTarget(config))).not.toThrow();
     },
   );
@@ -241,7 +257,8 @@ describe("assertTransport (fail closed)", () => {
 });
 
 describe("clientOptions (M4, M6)", () => {
-  const target = (tls?: SSLMode) => resolveTarget(connection({ ssl: tls === undefined ? undefined : { mode: tls } }));
+  const target = (tls?: SSLMode) =>
+    resolveTarget(connection({ ssl: tls === undefined ? undefined : { mode: tls, caCert: PEM } }));
   const base = { host: "db2.example.com", port: 50001, database: "TESTDB", user: "db2inst1", password: "secret" };
 
   test.each([
@@ -265,7 +282,9 @@ describe("clientOptions (M4, M6)", () => {
   test("never queryTimeout, currentSchema or securityMechanism, whatever the connection carries", () => {
     for (const mode of [undefined, "disable", "require", "verify-system", "verify-ca", "verify-full"] as const) {
       const options = clientOptions(
-        resolveTarget(connection({ ssl: mode === undefined ? undefined : { mode }, queryTimeout: 5, schema: "APP" })),
+        resolveTarget(
+          connection({ ssl: mode === undefined ? undefined : { mode, caCert: PEM }, queryTimeout: 5, schema: "APP" }),
+        ),
         "/tmp/ca.pem",
       );
       expect(Object.keys(options)).not.toContain("queryTimeout");
