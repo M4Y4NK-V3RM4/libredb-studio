@@ -11,6 +11,9 @@ import { resolveSqlGrammar } from "@/lib/sql/grammar";
 import { readSqlSpan } from "@/lib/sql/spans";
 import { fitsJavaScriptNumber } from "../sqlite-int64";
 
+/** The `typeof` answers db2-node 1.0.22 binds, or refuses with an error a `catch` can see. */
+const SCALAR_TYPES = new Set(["string", "number", "boolean", "undefined"]);
+
 /**
  * The parameters with every `bigint` made bindable, or refused (M3).
  *
@@ -20,17 +23,29 @@ import { fitsJavaScriptNumber } from "../sqlite-int64";
  * here, naming the parameter and its value. There is no lossless way to bind one either: the
  * driver refuses a BIGINT bound as a string and rounds one bound as a number.
  *
+ * Only a scalar or a byte buffer goes on. A bigint inside an array or an object aborts the
+ * process the same way, and a `Date` or a `Map` is bound as the text `{}` with no error, so any
+ * other parameter is refused here too (measured on 12.1.0.0).
+ *
  * `undefined` stays `undefined`, so a statement with no parameters is sent with none rather
  * than with an empty list.
  */
 export function normaliseParams(params?: unknown[]): unknown[] | undefined {
   if (params === undefined) return undefined;
   return params.map((value, index) => {
-    if (typeof value !== "bigint") return value;
-    if (fitsJavaScriptNumber(value)) return Number(value);
+    if (typeof value === "bigint") {
+      if (fitsJavaScriptNumber(value)) return Number(value);
+      throw new QueryError(
+        `Parameter ${index + 1} is a bigint outside the safe integer range (${value}); db2-node 1.0.22 cannot bind ` +
+          "it losslessly and aborts the process on a bigint. Pass it as a string literal in the SQL instead.",
+        "db2",
+      );
+    }
+    if (value === null || value instanceof Uint8Array || SCALAR_TYPES.has(typeof value)) return value;
+    const kind = Array.isArray(value) ? "an array" : typeof value === "object" ? "an object" : `a ${typeof value}`;
     throw new QueryError(
-      `Parameter ${index + 1} is a bigint outside the safe integer range (${value}); db2-node 1.0.22 cannot bind it ` +
-        "losslessly and aborts the process on a bigint. Pass it as a string literal in the SQL instead.",
+      `Parameter ${index + 1} is ${kind}; db2-node 1.0.22 binds only strings, numbers, booleans, null and byte ` +
+        "buffers, and aborts the process on a bigint inside an array or an object. Pass each value as its own parameter.",
       "db2",
     );
   });

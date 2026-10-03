@@ -48,13 +48,42 @@ describe("normaliseParams (M3)", () => {
     );
   });
 
-  test("every other value passes through untouched, by identity", () => {
+  test("every scalar and binary value passes through untouched, by identity", () => {
     const buffer = Buffer.from([1, 2]);
-    const values = ["text", 1.5, null, true, buffer];
+    const bytes = new Uint8Array([3]);
+    const values = ["text", 1.5, null, undefined, true, buffer, bytes];
     const normalised = normaliseParams(values);
 
     expect(normalised).toEqual(values);
-    expect(normalised?.[4]).toBe(buffer);
+    expect(normalised?.[5]).toBe(buffer);
+    expect(normalised?.[6]).toBe(bytes);
+  });
+
+  // Measured on db2-node 1.0.22: `[[1n]]` and `[{ a: 1n }]` abort the process with a core dump,
+  // exactly as a top-level bigint does, and a `Date` or a `Map` is bound as the text `{}`.
+  test("an array or object parameter is refused by index, a nested bigint included", () => {
+    for (const [value, kind] of [
+      [[BigInt(1)], "an array"],
+      [{ a: BigInt(1) }, "an object"],
+      [[1], "an array"],
+      [new Date(0), "an object"],
+      [new Map(), "an object"],
+    ] as const) {
+      let caught: unknown;
+      try {
+        normaliseParams(["a", value]);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(QueryError);
+      expect((caught as QueryError).provider).toBe("db2");
+      expect((caught as Error).message).toContain(`Parameter 2 is ${kind}`);
+    }
+  });
+
+  test("a symbol or function parameter is refused too", () => {
+    expect(() => normaliseParams([Symbol("x")])).toThrow(/Parameter 1 is a symbol/);
+    expect(() => normaliseParams([() => 1])).toThrow(/Parameter 1 is a function/);
   });
 });
 
