@@ -5,9 +5,11 @@
  * WHY THIS EXISTS, AND WHY IT CANNOT BE A UNIT TEST. The unit tests drive the provider through a
  * fake driver seam, so they answer whatever the fake was told. Only the server can say that the
  * catalog SQL still reads SYSCAT the way the fixture was built, that a paged SELECT runs, that
- * RUNSTATS and REORG escape a quote inside a table name, that a JS bigint parameter is refused
- * before it reaches db2-node (where it aborts the process, K10 in
- * `tests/live/db2-known-issues.ts`), and that `verify-ca` connects with a PEM held as text.
+ * RUNSTATS and REORG escape a quote and a blank inside a table name and refuse a view, that a
+ * definition longer than one chunk reads whole and one over the bound reads as partial, that a
+ * JS bigint parameter, alone or inside an array, is refused before it reaches db2-node (where it
+ * aborts the process, K10 in `tests/live/db2-known-issues.ts`), and that `verify-ca` connects
+ * with a PEM held as text.
  *
  * Unlike the known-issue report, this one FAILS: every check prints PASS or FAIL with the
  * verbatim error, and the process exits non-zero when any check failed.
@@ -22,8 +24,9 @@
  * because the compose service has no TLS listener. It is NOT in `bun run test`: the runner
  * excludes `tests/live/` by name (`EXCLUDED` in `tests/runner/discover.ts`).
  */
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { QueryError } from "@/lib/db/errors";
+import { DatabaseConfigError, QueryError } from "@/lib/db/errors";
 import { Db2Provider } from "@/lib/db/providers/sql/db2";
 import type { DatabaseObject } from "@/lib/db/types";
 import type { DatabaseConnection } from "@/lib/types";
@@ -42,6 +45,22 @@ const CONNECTION: DatabaseConnection = {
   allowInsecureAuth: true,
   createdAt: new Date(),
 };
+
+/**
+ * A scratch schema for the two long views, created and dropped by this run: the fixture holds no
+ * definition longer than one source chunk, and loading one there would only reach a fresh volume.
+ */
+const SCRATCH = `LIBREDB_LC_${randomBytes(3).toString("hex").toUpperCase()}`;
+
+/** A view whose stored text is about `bytes` long: an IN list of numbers, all ASCII. */
+function longViewSql(name: string, bytes: number): string {
+  const values: string[] = [];
+  for (let total = 0, n = 1; total < bytes; n++) {
+    values.push(String(n));
+    total += String(n).length + 2;
+  }
+  return `CREATE VIEW ${SCRATCH}.${name} AS SELECT ID FROM APP.ORDERS WHERE ID IN (${values.join(", ")})`;
+}
 
 let failures = 0;
 
@@ -116,6 +135,40 @@ async function main(): Promise<void> {
     expect("text" in part && /SELECT/i.test(part.text), `first part ${JSON.stringify(part)}`);
   });
 
+  await check("describeObject reads the materialized query table APP.ORDER_TOTALS", async () => {
+    const detail = await provider.describeObject(["APP", "ORDER_TOTALS"], "materialized_query_table");
+    expect(detail.columns.length > 0, `columns ${JSON.stringify(detail.columns)}`);
+  });
+
+  await check("setup: two long views in a scratch schema", async () => {
+    await provider.query(`CREATE SCHEMA ${SCRATCH}`);
+    // One chunk is 16336 bytes and the bound is two: one view needs the tail read, one is cut.
+    await provider.query(longViewSql("LONG_VIEW", 20_000));
+    await provider.query(longViewSql("HUGE_VIEW", 40_000));
+  });
+
+  await check("readObjectSource reads a definition longer than one chunk whole", async () => {
+    const document = await provider.readObjectSource([SCRATCH, "LONG_VIEW"], "view");
+    const part = document.parts[0];
+    expect("text" in part, `first part ${JSON.stringify(part).slice(0, 300)}`);
+    if (!("text" in part)) return;
+    expect(part.form === "complete" && part.truncated === undefined, `form ${part.form}`);
+    expect(
+      part.text.length > 16_336 && /\)\s*$/.test(part.text),
+      `${part.text.length} chars, ends ${part.text.slice(-40)}`,
+    );
+  });
+
+  await check("readObjectSource reads a definition over the byte bound as partial, saying why", async () => {
+    const document = await provider.readObjectSource([SCRATCH, "HUGE_VIEW"], "view");
+    const part = document.parts[0];
+    expect("text" in part, `first part ${JSON.stringify(part).slice(0, 300)}`);
+    if (!("text" in part)) return;
+    expect(part.form === "partial", `form ${part.form}`);
+    expect(part.truncated?.limit === 32_672, `truncated ${JSON.stringify(part.truncated)}`);
+    expect(part.text.length === 32_672, `${part.text.length} chars`);
+  });
+
   await check("readObjectSource refuses an EXTERNAL function's body", async () => {
     const functions = await provider.listObjects(["APP"], "function");
     const external = functions.find((fn) => fn.name === "EXT_FN");
@@ -143,7 +196,26 @@ async function main(): Promise<void> {
       const result = await provider.runMaintenance(operation, "O'Brien", "APP");
       expect(result.success, result.message);
     });
+    await check(`${word} runs on a table whose name holds a blank and lower case`, async () => {
+      const result = await provider.runMaintenance(operation, "Mixed Case", "APP");
+      expect(result.success, result.message);
+    });
+    await check(`${word} on a view is refused with DatabaseConfigError`, async () => {
+      let refused: unknown;
+      try {
+        await provider.runMaintenance(operation, "ORDER_SUMMARY", "APP");
+      } catch (error) {
+        refused = error;
+      }
+      expect(refused instanceof DatabaseConfigError, `got ${refused === undefined ? "a result" : errorText(refused)}`);
+    });
   }
+
+  await check("getOverview answers the product version and the object counts", async () => {
+    const overview = await provider.getOverview();
+    expect(overview.version.startsWith("DB2 v"), `version ${overview.version}`);
+    expect(overview.tableCount > 0, `overview ${JSON.stringify(overview)}`);
+  });
 
   await check("a JS bigint parameter is refused with QueryError and the process lives", async () => {
     let refused: unknown;
@@ -155,6 +227,25 @@ async function main(): Promise<void> {
     expect(refused instanceof QueryError, `got ${refused === undefined ? "a result" : errorText(refused)}`);
     const after = await provider.query("VALUES 1");
     expect(after.rows.length === 1, "the connection did not answer after the refusal");
+  });
+
+  await check("a bigint inside an array parameter is refused with QueryError and the process lives", async () => {
+    let refused: unknown;
+    try {
+      await provider.query("VALUES CAST(? AS VARCHAR(10))", [[BigInt(1)]]);
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused instanceof QueryError, `got ${refused === undefined ? "a result" : errorText(refused)}`);
+    const after = await provider.query("VALUES 1");
+    expect(after.rows.length === 1, "the connection did not answer after the refusal");
+  });
+
+  await check("cleanup: the scratch schema is dropped", async () => {
+    for (const view of ["LONG_VIEW", "HUGE_VIEW"]) {
+      await provider.query(`DROP VIEW ${SCRATCH}.${view}`).catch(() => undefined);
+    }
+    await provider.query(`DROP SCHEMA ${SCRATCH} RESTRICT`);
   });
 
   await check("disconnect", () => provider.disconnect());
