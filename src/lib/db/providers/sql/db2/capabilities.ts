@@ -6,6 +6,8 @@
  * each one that withholds a surface says why beside it.
  */
 import type { ContainerLevels, ObjectKindSpec, ProviderCapabilities, ProviderLabels } from "@/lib/db/types";
+import { MAINTAINED_KINDS } from "./maintenance";
+import { DB2_PREVIEW_PROJECTION } from "./values";
 
 /**
  * One level, the schema. A connection opens one database, and nothing in the product can switch
@@ -67,11 +69,12 @@ export function db2Capabilities(base: ProviderCapabilities): ProviderCapabilitie
     supportsTransactions: false,
     supportsMaintenance: true,
     // RUNSTATS and REORG, each run per table: Db2 LUW has no whole-database form of either, so
-    // neither is offered globally.
+    // neither is offered globally. A Db2 view is a relation and refuses both, so each names the
+    // kinds it runs on.
     maintenanceOperations: ["analyze", "optimize"],
     maintenanceOperationSpecs: {
-      analyze: { label: "Run Statistics", perEntity: true, global: false },
-      optimize: { label: "Reorganize Table", perEntity: true, global: false },
+      analyze: { label: "Run Statistics", perEntity: true, global: false, kinds: MAINTAINED_KINDS },
+      optimize: { label: "Reorganize Table", perEntity: true, global: false, kinds: MAINTAINED_KINDS },
     },
     // A `db2://` URL pasted into the form fills its fields.
     supportsConnectionString: true,
@@ -83,6 +86,8 @@ export function db2Capabilities(base: ProviderCapabilities): ProviderCapabilitie
     // Only the declared depth is an address: a partial path would leave the schema unbound.
     containerPathShapes: "exact",
     objectKinds: DB2_OBJECT_KINDS,
+    // How a preview reads each column, because db2-node 1.0.22 misreads some types (`values.ts`).
+    previewProjection: DB2_PREVIEW_PROJECTION,
   };
 }
 

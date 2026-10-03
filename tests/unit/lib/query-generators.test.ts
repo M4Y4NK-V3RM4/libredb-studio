@@ -1214,8 +1214,22 @@ describe("the generated statement addresses an object by its path", () => {
   // terminator or limit arm is needed.
   const db2Caps = db2Capabilities(makeCaps());
 
-  test("Db2 quotes an upper-case name, which is how its catalog stores one", () => {
-    expect(generateTableQuery(["APP", "CUSTOMERS"], db2Caps)).toBe('SELECT * FROM "APP"."CUSTOMERS";');
+  test("Db2 quotes an upper-case name, and previews through its declared projection", () => {
+    const columns: ColumnSchema[] = [
+      { name: "ID", type: "INTEGER", nullable: false, isPrimary: true },
+      { name: "NAME", type: "VARCHAR(40)", nullable: true, isPrimary: false },
+      { name: "NOTES", type: "CLOB(1048576)", nullable: true, isPrimary: false },
+    ];
+    expect(generateTableQuery(["APP", "CUSTOMERS"], db2Caps, columns)).toBe(
+      `-- Not read by this preview: "NOTES" CLOB(1048576). ${db2Caps.previewProjection?.omittedNote}\n` +
+        'SELECT "ID", VARGRAPHIC("NAME") AS "NAME" FROM "APP"."CUSTOMERS";',
+    );
+  });
+
+  test("Db2 with no column list loaded reads every column under its unprojected note", () => {
+    expect(generateTableQuery(["APP", "CUSTOMERS"], db2Caps)).toBe(
+      `-- ${db2Caps.previewProjection?.unprojectedNote}\nSELECT * FROM "APP"."CUSTOMERS";`,
+    );
   });
 
   test("Generate Query on Db2 bounds with LIMIT", () => {

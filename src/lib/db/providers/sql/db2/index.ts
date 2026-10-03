@@ -53,16 +53,11 @@ import { db2Capabilities, db2Labels } from "./capabilities";
 import { CODE_PAGE_SQL, decodeCatalogRow } from "./catalog";
 import { type CaFileSystem, type Db2Connection, NODE_CA_FILE_SYSTEM, openClient, resolveTarget } from "./connection";
 import { type Db2Client, type Db2Driver, loadDb2Driver } from "./driver";
-import {
-  MAINTAINED_KINDS,
-  MAINTAINED_TABLE_TYPES,
-  MAINTENANCE_TARGET_TYPE_SQL,
-  maintenanceStatement,
-} from "./maintenance";
+import { MAINTAINED_TABLE_TYPES, MAINTENANCE_TARGET_TYPE_SQL, maintenanceStatement } from "./maintenance";
 import { neutralHealth, readOverview } from "./monitoring";
 import * as objects from "./objects";
 import { driverStatement, normaliseParams } from "./params";
-import { DB2_PREVIEW_PROJECTION, readResult } from "./values";
+import { readResult } from "./values";
 
 /** The seams a test replaces; production uses the defaults. */
 export interface Db2ProviderSeams {
@@ -90,21 +85,8 @@ export class Db2Provider extends SQLBaseProvider {
     this.validate();
   }
 
-  /**
-   * The frozen declaration, plus two facts the shared surfaces read: how a preview reads each
-   * column (`DB2_PREVIEW_PROJECTION`), and which kinds RUNSTATS and REORG run on, because a Db2
-   * view is a relation and refuses both.
-   */
   public override getCapabilities(): ProviderCapabilities {
-    const declared = db2Capabilities(super.getCapabilities());
-    const specs = declared.maintenanceOperationSpecs ?? {};
-    return {
-      ...declared,
-      previewProjection: DB2_PREVIEW_PROJECTION,
-      maintenanceOperationSpecs: Object.fromEntries(
-        Object.entries(specs).map(([operation, spec]) => [operation, { ...spec, kinds: MAINTAINED_KINDS }]),
-      ),
-    };
+    return db2Capabilities(super.getCapabilities());
   }
 
   public override getLabels(): ProviderLabels {

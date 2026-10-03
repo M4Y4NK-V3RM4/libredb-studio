@@ -536,7 +536,7 @@ const column = (name: string, typeName: string): Db2ColumnMeta => ({ name, typeN
 // ============================================================================
 
 describe("Db2Provider: declaration", () => {
-  test("is an SQL provider whose capabilities are the frozen declaration plus two facts", () => {
+  test("is an SQL provider whose capabilities are the frozen declaration, read whole", () => {
     const provider = makeProvider();
     const base = Object.getPrototypeOf(SQLBaseProvider.prototype).getCapabilities.call(
       provider,
@@ -545,14 +545,23 @@ describe("Db2Provider: declaration", () => {
     const capabilities = provider.getCapabilities();
 
     expect(provider).toBeInstanceOf(SQLBaseProvider);
-    expect(capabilities).toEqual({
-      ...declared,
-      previewProjection: DB2_PREVIEW_PROJECTION,
-      maintenanceOperationSpecs: {
-        analyze: { ...declared.maintenanceOperationSpecs?.analyze, kinds: ["table", "materialized_query_table"] },
-        optimize: { ...declared.maintenanceOperationSpecs?.optimize, kinds: ["table", "materialized_query_table"] },
+    expect(capabilities).toEqual(declared);
+    // The two facts the shared surfaces read are in the declaration itself, so a census sees them.
+    expect(declared.previewProjection).toBe(DB2_PREVIEW_PROJECTION);
+    expect(declared.maintenanceOperationSpecs).toEqual({
+      analyze: {
+        label: "Run Statistics",
+        perEntity: true,
+        global: false,
+        kinds: ["table", "materialized_query_table"],
       },
-    } as ProviderCapabilities);
+      optimize: {
+        label: "Reorganize Table",
+        perEntity: true,
+        global: false,
+        kinds: ["table", "materialized_query_table"],
+      },
+    });
     expect(capabilities.objectKinds).toBe(DB2_OBJECT_KINDS);
     expect(capabilities.containerLevels).toBe(DB2_CONTAINER_LEVELS);
     expect(provider.getLabels()).toEqual(
