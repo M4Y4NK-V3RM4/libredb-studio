@@ -10,7 +10,8 @@
  *
  * It is a REPORT and exits 0 whatever it finds: one line per known issue,
  * `K<n> <short name>: PRESENT | GONE | ERROR <message>`, under a header naming the driver version
- * and the server's SERVICE_LEVEL. The provider's own regressions are the job of
+ * and the server's SERVICE_LEVEL. A row that covers several defects, as K16 does, names the ones
+ * still present in brackets after PRESENT. The provider's own regressions are the job of
  * `tests/live/db2-live-check.ts`, which does fail.
  *
  * K10 aborts the whole process when it is present, so it runs in a child process. K14 leaves a
@@ -40,7 +41,8 @@ const BASE: ConnectionConfig = {
 const SCHEMA = `LIBREDB_KI_${randomBytes(3).toString("hex").toUpperCase()}`;
 const DUMMY = "FROM SYSIBM.SYSDUMMY1";
 
-type Verdict = "PRESENT" | "GONE";
+/** A probe that covers several defects names the ones still present in brackets. */
+type Verdict = "PRESENT" | "GONE" | `PRESENT (${string})`;
 
 async function open(extra: Partial<ConnectionConfig> = {}): Promise<Client> {
   const client = new Client({ ...BASE, ...extra });
@@ -280,12 +282,25 @@ const probes: Array<[string, (c: Client) => Promise<Verdict>]> = [
     },
   ],
   [
-    "K16 GRAPHIC bind is mis-encoded",
+    "K16 GRAPHIC, TIMESTAMP(12), Date and BOOLEAN binds",
     async (c) => {
-      await c.query(`CREATE TABLE ${SCHEMA}.K16 (G GRAPHIC(5))`);
-      await c.query(`INSERT INTO ${SCHEMA}.K16 VALUES (?)`, ["ＡＢ"]);
+      // Four defects under one row, so each is checked and the verdict names the ones left.
+      await c.query(`CREATE TABLE ${SCHEMA}.K16 (ID INTEGER, G GRAPHIC(5), TS TIMESTAMP(12), B BOOLEAN)`);
+      await c.query(`INSERT INTO ${SCHEMA}.K16 (ID) VALUES (1)`);
+      const present: string[] = [];
+      await c.query(`UPDATE ${SCHEMA}.K16 SET G = ? WHERE ID = 1`, ["ＡＢ"]);
       const hex = String(first(await c.query(`SELECT HEX(G) FROM ${SCHEMA}.K16`)));
-      return hex.includes("0000") ? "PRESENT" : "GONE";
+      if (hex.includes("0000")) present.push("GRAPHIC padded with U+0000");
+      const timestamp = await attempt(() =>
+        c.query(`UPDATE ${SCHEMA}.K16 SET TS = ? WHERE ID = 1`, ["2026-01-01-00.00.00.000000000000"]),
+      );
+      if (!timestamp.ok) present.push("TIMESTAMP(12) refused");
+      const date = await attempt(() => c.query(`UPDATE ${SCHEMA}.K16 SET TS = ? WHERE ID = 1`, [new Date()]));
+      if (!date.ok) present.push("Date refused");
+      // Alone, a BOOLEAN bound as a string is accepted; beside another parameter it is not.
+      const boolean = await attempt(() => c.query(`INSERT INTO ${SCHEMA}.K16 (ID, B) VALUES (?, ?)`, [2, "true"]));
+      if (!boolean.ok) present.push("BOOLEAN in a parameter list");
+      return present.length === 0 ? "GONE" : `PRESENT (${present.join(", ")})`;
     },
   ],
   [
@@ -341,6 +356,18 @@ const probes: Array<[string, (c: Client) => Promise<Verdict>]> = [
       }
     },
   ],
+  [
+    "K22 a bound DECIMAL out of range is stored wrong, with no error",
+    async (c) => {
+      // The same value as a literal is refused with SQLSTATE 22003; bound, 12345.67 was stored as 345.67.
+      await c.query(`CREATE TABLE ${SCHEMA}.K22 (ID INTEGER, AMT DECIMAL(5,2))`);
+      await c.query(`INSERT INTO ${SCHEMA}.K22 VALUES (1, 0)`);
+      const update = await attempt(() => c.query(`UPDATE ${SCHEMA}.K22 SET AMT = ? WHERE ID = ?`, ["12345.67", 1]));
+      if (!update.ok) return "GONE";
+      const stored = String(first(await c.query(`SELECT VARCHAR(AMT) FROM ${SCHEMA}.K22`)));
+      return stored === "12345.67" ? "GONE" : `PRESENT (stored ${stored})`;
+    },
+  ],
 ];
 
 async function main(): Promise<void> {
@@ -361,7 +388,7 @@ async function main(): Promise<void> {
       console.log(`${name}: ${outcome.ok ? outcome.value : `ERROR ${message(outcome.error)}`}`);
     }
   } finally {
-    for (const table of ["K1", "K3", "K5", "K16", "K19"])
+    for (const table of ["K1", "K3", "K5", "K16", "K19", "K22"])
       await attempt(() => client.query(`DROP TABLE ${SCHEMA}.${table}`));
     const dropped = await attempt(() => client.query(`DROP SCHEMA ${SCHEMA} RESTRICT`));
     if (!dropped.ok) console.log(`cleanup: schema ${SCHEMA} was left behind: ${message(dropped.error)}`);
