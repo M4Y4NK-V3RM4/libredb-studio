@@ -296,6 +296,51 @@ const probes: Array<[string, (c: Client) => Promise<Verdict>]> = [
       return (result.error as { sqlstate?: string }).sqlstate === undefined ? "PRESENT" : "GONE";
     },
   ],
+  [
+    "K18 a statement that starts with a comment is refused",
+    async (c) => {
+      const block = await attempt(() => c.query(`/* note */ VALUES 1`));
+      const line = await attempt(() => c.query(`-- note\nVALUES 1`));
+      return block.ok && line.ok ? "GONE" : "PRESENT";
+    },
+  ],
+  [
+    "K19 an UPDATE that matches no row reports a negative row count",
+    async (c) => {
+      await c.query(`CREATE TABLE ${SCHEMA}.K19 (ID INTEGER)`);
+      const result = await c.query(`UPDATE ${SCHEMA}.K19 SET ID = 1 WHERE ID = 2`);
+      return result.rowCount < 0 ? "PRESENT" : "GONE";
+    },
+  ],
+  [
+    "K20 a value truncated with a warning desynchronises the driver",
+    async () => {
+      // Its own connection: when the defect is present the stream is left in an unknown state.
+      const client = await open();
+      try {
+        const result = await attempt(() => client.query(`VALUES CAST(REPEAT('x', 100) AS VARCHAR(10))`));
+        return result.ok && first(result.value) === "xxxxxxxxxx" ? "GONE" : "PRESENT";
+      } finally {
+        await attempt(() => client.close());
+      }
+    },
+  ],
+  [
+    "K21 a row wider than one DRDA block fails",
+    async () => {
+      // Twice on its own connection: measured failing on the first run and on the second.
+      const client = await open();
+      try {
+        for (let run = 0; run < 2; run++) {
+          const result = await attempt(() => client.query(`VALUES (REPEAT('a', 32672), REPEAT('b', 32672))`));
+          if (!result.ok) return "PRESENT";
+        }
+        return "GONE";
+      } finally {
+        await attempt(() => client.close());
+      }
+    },
+  ],
 ];
 
 async function main(): Promise<void> {
@@ -316,7 +361,8 @@ async function main(): Promise<void> {
       console.log(`${name}: ${outcome.ok ? outcome.value : `ERROR ${message(outcome.error)}`}`);
     }
   } finally {
-    for (const table of ["K1", "K3", "K5", "K16"]) await attempt(() => client.query(`DROP TABLE ${SCHEMA}.${table}`));
+    for (const table of ["K1", "K3", "K5", "K16", "K19"])
+      await attempt(() => client.query(`DROP TABLE ${SCHEMA}.${table}`));
     const dropped = await attempt(() => client.query(`DROP SCHEMA ${SCHEMA} RESTRICT`));
     if (!dropped.ok) console.log(`cleanup: schema ${SCHEMA} was left behind: ${message(dropped.error)}`);
     await client.close();

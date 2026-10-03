@@ -134,7 +134,7 @@ Then paste `ca.arm` (it is PEM) into the SSL panel's CA certificate field, set t
 
 ## 4. Known issues (db2-node 1.0.22)
 
-Every row below is reported upstream at [gurungabit/db2-node#12](https://github.com/gurungabit/db2-node/issues/12).
+K1 to K17 are reported upstream at [gurungabit/db2-node#12](https://github.com/gurungabit/db2-node/issues/12); K18 to K21 were measured after that report and are not in it yet.
 The provider will move to a driver release that fixes them, and the maintainer's fork, [libredb/database-provider-db2-node](https://github.com/libredb/database-provider-db2-node), is the fallback if upstream does not.
 The live script `tests/live/db2-known-issues.ts` probes each row against a running Db2 and prints `PRESENT` or `GONE`, so a driver bump starts by running it.
 
@@ -143,10 +143,10 @@ The live script `tests/live/db2-known-issues.ts` probes each row against a runni
 | K1 | Non-ASCII text in CHAR or VARCHAR is decoded as EBCDIC 037 | "Grüße" reads as mojibake; the bytes on the server are correct | No | None for reads; write non-ASCII text with another client. Inline row edit, data import and Create Table are off, so Studio never writes the garbled text back |
 | K2 | INTEGER is byte-swapped when a DECFLOAT or BOOLEAN column sits in the same row | 1 reads as 16777216 | No | Select the INTEGER and the DECFLOAT or BOOLEAN columns in separate queries, or `CAST(col AS VARCHAR(40))` the DECFLOAT or BOOLEAN |
 | K3 | A BOOLEAN column alone returns phantom rows | 7 rows for 3 | No | `CAST(col AS VARCHAR(5))` |
-| K4 | `SELECT *` on a table with such columns returns no rows and no error | rowCount 0, and columns missing from the header | Partly: the object browser's preview names and casts its columns | Name the columns and cast the defect types |
-| K5 | XML rows whose value is NULL are dropped | 1 row of 3 | No | `XMLSERIALIZE(col AS VARCHAR(32000))` |
+| K4 | `SELECT *` on a table with such columns returns too few rows and no error | rowCount 0, or some of the rows, and columns missing from the header: `APP.ALLTYPES` answered 2 rows of 3 and 20 of 25 columns, while the projected preview answered all 3 rows exactly | Partly: the object browser's preview names and casts its columns | Name the columns and cast the defect types |
+| K5 | XML rows whose value is NULL are dropped | 1 row of 3 | No | `XMLSERIALIZE(col AS VARCHAR(32000))`, which drops a row whose document is longer than 32000 bytes, silently |
 | K6 | BIGINT is read as a JS number, lossy above 2^53, and cannot be bound losslessly | 9223372036854775807 reads as 9223372036854776000 | Partly: the preview casts BIGINT, and a result with a BIGINT column carries an integrity warning | `CAST(col AS VARCHAR(20))` or `CHAR(col)` |
-| K7 | CLOB, DBCLOB and BLOB fetches fail | SQLSTATE 58009, SQLCODE -30020, and the LOB column vanishes from the header | Yes for the provider's own reads: no catalog query selects a LOB | `CAST(col AS VARCHAR(32672))` for text, or leave the LOB column out |
+| K7 | CLOB, DBCLOB and BLOB fetches fail | SQLSTATE 58009, SQLCODE -30020, and the LOB column vanishes from the header | Yes for the provider's own reads: no catalog query selects a LOB | `VARCHAR(SUBSTRING(col, 1, 32672, OCTETS), 32672)` for text, never a `CAST` that truncates (K20), or leave the LOB column out |
 | K8 | TIMESTAMP(0) and TIMESTAMP(12) fail to decode | "expected 26 bytes" | No | `VARCHAR(ts)` |
 | K9 | Every `CALL` fails | SQLSTATE 07005, SQLCODE -517 | Yes for maintenance, which wraps its call in a compound block | None in the editor: Studio's statement splitter cuts a `BEGIN ... END` block at its inner `;`, so use RUNSTATS and REORG from the object tree |
 | K10 | Binding a JS `bigint` panics in Rust and aborts the process | An uncatchable crash of the whole server | Yes: `normaliseParams()` turns a safe-integer `bigint` into a number and refuses anything larger with a query error, before the driver sees it | Not needed |
@@ -157,8 +157,10 @@ The live script `tests/live/db2-known-issues.ts` probes each row against a runni
 | K15 | Duplicate column names collapse in a row | `columns` lists both, the row holds one value | Yes, by visibility: the result carries a warning naming the column | Alias each column |
 | K16 | A GRAPHIC parameter is padded with U+0000; TIMESTAMP(12) and `Date` parameters are refused; a bind into BOOLEAN, BLOB or CLOB fails | "parameter descriptor count" | Yes for the provider's own SQL, which binds only VARCHAR-compatible values | Write the value as a literal |
 | K17 | Client-side failures carry no SQLSTATE | A protocol message only | No | Read the message |
-| K18 | A statement that starts with a block comment is refused | SQLSTATE 42612, SQLCODE -84 | Yes: the provider strips leading comments before the statement reaches the driver | Not needed |
+| K18 | A statement that starts with a comment, block or line, is refused | SQLSTATE 42612, SQLCODE -84 | Yes: the provider strips leading comments before the statement reaches the driver | Not needed |
 | K19 | A searched UPDATE or DELETE that matches no row reports -2147221503 changed rows | A negative row count | Yes: that value is read as 0, and any other negative count is reported as 0 with a warning that the count is unknown | Not needed |
+| K20 | A value truncated with a warning desynchronises the driver | `VALUES CAST(REPEAT('x', 100) AS VARCHAR(10))` answers "Protocol error: query ended with undecoded row data"; a `CAST` of a 40868-byte CLOB to VARCHAR(32672) answered 36 garbage rows in one run and "Protocol error: invalid DSS magic byte" in another, and `VARGRAPHIC()` over a value longer than 16336 units returned garbage rows | Yes for the provider's own reads: a definition is read in `SUBSTRING` chunks, and the preview casts only values that fit | `VARCHAR(SUBSTRING(col, start, n, OCTETS), n)` |
+| K21 | A row wider than one DRDA block fails | Two VARCHAR(32672) columns answer "Protocol error: invalid DSS magic byte", on the first run or the second | Yes for the provider's own reads: a definition is read one chunk per statement | Select fewer wide columns per statement |
 
 A result with a BIGINT, DECFLOAT, BOOLEAN or XML column carries an integrity warning above the grid that names those columns, says what the driver does to them and which cast reads them correctly, and says that exported or copied rows carry the same values; copy and export stay available, so read the warning before you hand the rows on.
 TIMESTAMP(0), TIMESTAMP(12) and LOB columns need no warning, because they fail with an error instead.
