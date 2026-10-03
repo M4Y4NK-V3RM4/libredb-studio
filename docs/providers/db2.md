@@ -379,6 +379,7 @@ The addons statically link 62 Rust crates whose licences the npm package does no
 
 The `rustls` and `rustls-webpki` versions compiled into 1.0.22 fall inside published RustSec advisories, checked on 2026-10-03: `rustls` 0.23.37 is inside RUSTSEC-2026-0285 (patched in 0.23.45), and `rustls-webpki` 0.103.10 inside RUSTSEC-2026-0098, RUSTSEC-2026-0099 and RUSTSEC-2026-0104 (patched in 0.103.13).
 They are compiled into the addon, so only a new `db2-node` release can pick the fixes up.
+P7 in `docs/BACKLOG.md` tracks that release.
 Only linux x64 was measured; arm64, macOS and Windows load the addon in the release probes but were not run against a Db2.
 
 ## 13. Testing
