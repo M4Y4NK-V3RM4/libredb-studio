@@ -9,6 +9,7 @@ in lockstep with the code (see the tri-sync rule in [`../../CLAUDE.md`](../../CL
 | PostgreSQL | `postgres` | SQL | `pg` | SQL | [postgres.md](./postgres.md) |
 | MySQL | `mysql` | SQL | `mysql2` | SQL | [mysql.md](./mysql.md) |
 | Oracle | `oracle` | SQL | `oracledb` (Thin) | SQL | [oracle.md](./oracle.md) |
+| Db2 LUW | `db2` | SQL | `db2-node` (native N-API addon, Rust DRDA client) | SQL (Db2) | [db2.md](./db2.md) |
 | Microsoft SQL Server | `mssql` | SQL | `mssql` | SQL (T-SQL) | [mssql.md](./mssql.md) |
 | SQLite | `sqlite` | SQL (embedded) | `bun:sqlite` (Bun) / `node:sqlite` (Node) | SQL | [sqlite.md](./sqlite.md) |
 | libSQL | `libsql` | SQL (SQLite over a network) | none (HTTP: the Hrana protocol, `POST /v2/pipeline`) | SQL (SQLite) | [libsql.md](./libsql.md) |
@@ -31,7 +32,7 @@ in lockstep with the code (see the tri-sync rule in [`../../CLAUDE.md`](../../CL
 
 - **Filename = canonical type-id** (`postgres.md`, `mssql.md`, …), mirroring the source file
   (`src/lib/db/providers/<family>/<type-id>.ts`, or a `<type-id>/` directory when a provider is
-  split across modules, as Couchbase, ClickHouse, Druid, Trino, Cassandra, libSQL, DuckDB, Prometheus, Kafka and etcd are). The official product name (e.g.
+  split across modules, as Couchbase, ClickHouse, Druid, Trino, Cassandra, libSQL, DuckDB, Db2, Prometheus, Kafka and etcd are). The official product name (e.g.
   "SQL Server") is used only in each doc's title and prose. **One directory may serve two type-ids**
   — `providers/sql/search/` is `elasticsearch` and `opensearch` — and each type-id still gets its own
   document, because the tri-sync invariant is per type-id and each doc is the prime reference for its
@@ -254,9 +255,10 @@ block asks for (twice those differ; see the notes).
 The Prometheus row and the `prometheus-auth` note below were verified against the running containers on 2026-09-23, by the capture `tests/fixtures/prometheus/README.md` records.
 The Apache Kafka row and the `kafka-auth` and `kafka-cluster` notes below were verified against the running containers on 2026-09-24, by the capture `tests/fixtures/kafka/README.md` records.
 The etcd row and the etcd fixtures note below were verified against the running containers on 2026-09-30, by the capture `tests/fixtures/etcd/README.md` records.
+The Db2 LUW row is read off `database-compose.yml`: its image, capabilities and fixture were measured on 2026-10-03 on a container started the same way, not on the compose service itself, whose first boot creates the instance and the database and takes several minutes.
 
-Start the twenty always-on services with a plain `docker compose -f database-compose.yml up -d`:
-sixteen engine containers plus the one-shot `couchbase-init`, `trino-init`, `kafka-init` and `etcd-seed` seed sidecars; the `Profile` column names
+Start the twenty-one always-on services with a plain `docker compose -f database-compose.yml up -d`:
+seventeen engine containers plus the one-shot `couchbase-init`, `trino-init`, `kafka-init` and `etcd-seed` seed sidecars; the `Profile` column names
 the ones that need asking for. The count is derived, not written: a service in this file carries no
 `profiles:` key precisely when it backs a SHIPPED provider, so a plain `up -d` can reproduce that
 provider's integration pass.
@@ -266,6 +268,7 @@ provider's integration pass.
 | PostgreSQL | `postgres` | localhost | 5432 | `postgres` | `postgres` | `postgres` | — |
 | MySQL | `mysql` | localhost | 3306 | `root` | `root` | `mysql` | — |
 | Oracle | `oracle` | localhost | 1521 | `system` | `Password123!` | `XEPDB1` (service name) | — |
+| Db2 LUW | `db2` | localhost | 50000 | `db2inst1` | `Password123!` | `TESTDB` | — |
 | SQL Server | `mssql` | localhost | 1433 | `sa` | `Password123!` | `master` | — |
 | MongoDB | `mongodb` | localhost | 27017 | `admin` | `admin` | any; auth source `admin` | — |
 | Redis | `redis` | localhost | 6379 | *none* | *none* | *none* (db index 0) | — |
