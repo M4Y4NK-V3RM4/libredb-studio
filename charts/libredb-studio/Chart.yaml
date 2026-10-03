@@ -2,7 +2,7 @@ apiVersion: v2
 name: libredb-studio
 description: Web-based SQL IDE for cloud-native teams supporting twenty-one engines - PostgreSQL, MySQL, SQLite, DuckDB, Oracle, Db2 LUW, SQL Server, MongoDB, Redis, Couchbase, ClickHouse, Apache Druid, Elasticsearch, OpenSearch, Apache Trino, Apache Cassandra, libSQL, Prometheus, Apache Kafka, etcd and Neo4j
 type: application
-version: 0.1.74
+version: 0.1.75
 appVersion: "0.17.0"
 kubeVersion: ">=1.26.0-0"
 home: https://github.com/libredb/libredb-studio
@@ -163,7 +163,9 @@ annotations:
   # setting the image already read, this one exposes a setting ahead of the image.
   # False: 0.1.73 changes chart metadata only, naming etcd in the description, the keywords and
   # the README; no template, value or default moves.
-  # False: 0.1.74 changes chart metadata only, naming Db2 LUW and Neo4j in the description, the keywords and
+  # False: 0.1.74 changes chart metadata only, naming Neo4j in the description, the keywords and
+  # the README; no template, value or default moves.
+  # False: 0.1.75 changes chart metadata only, naming Db2 LUW in the description, the keywords and
   # the README; no template, value or default moves.
   artifacthub.io/containsSecurityUpdates: "false"
   artifacthub.io/images: |
@@ -181,7 +183,6 @@ annotations:
       url: https://github.com/libredb/libredb-studio
   artifacthub.io/changes: |
     - "The application image gains the Db2 LUW provider (#786); no template, value or default moves, and it acts once an application release moves appVersion."
-    - "The application image gains the read-only Neo4j provider; no template, value or default moves, and it acts once an application release moves appVersion."
 dependencies:
   - name: postgresql
     version: "16.x.x"
