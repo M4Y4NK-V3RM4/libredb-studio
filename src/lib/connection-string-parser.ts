@@ -245,21 +245,6 @@ interface TLSIntent {
  * value describes. `verify-system` is not in the table either - it is this form's own mode
  * name and not a libpq one, so a string carrying it is a string we cannot honour.
  */
-/**
- * Db2's `security=` keyword: `SSL` is the one value that names a TLS transport (#786). It maps to
- * a VERIFYING mode, by D26's rule and because the Db2 provider fails closed on unverified
- * transport: without TLS db2-node 1.0.22 can send the password in cleartext (K11).
- */
-const DB2_SECURITY: Record<string, SSLMode> = { ssl: "verify-system" };
-
-/** Db2's boolean `ssl=`, both ends mappable, onto the mode `security=SSL` reads as (#786). */
-const DB2_SSL: Record<string, SSLMode> = {
-  true: "verify-system",
-  "1": "verify-system",
-  false: "disable",
-  "0": "disable",
-};
-
 const POSTGRES_SSLMODE: Record<string, SSLMode> = {
   disable: "disable",
   require: "require",
@@ -276,6 +261,21 @@ const MYSQL_SSL_MODE: Record<string, SSLMode> = {
   required: "require",
   verify_ca: "verify-ca",
   verify_identity: "verify-full",
+};
+
+/**
+ * Db2's `security=` keyword: `SSL` is the one value that names a TLS transport (#786). It maps to
+ * a VERIFYING mode, by D26's rule and because the Db2 provider fails closed on unverified
+ * transport: without TLS db2-node 1.0.22 can send the password in cleartext (K11).
+ */
+const DB2_SECURITY: Record<string, SSLMode> = { ssl: "verify-system" };
+
+/** Db2's boolean `ssl=`, both ends mappable, onto the mode `security=SSL` reads as (#786). */
+const DB2_SSL: Record<string, SSLMode> = {
+  true: "verify-system",
+  "1": "verify-system",
+  false: "disable",
+  "0": "disable",
 };
 
 /**

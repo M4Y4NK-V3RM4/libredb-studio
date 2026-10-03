@@ -175,6 +175,14 @@ const NO_COLUMN_MODIFICATION: Partial<Record<DatabaseType, { label: string; reas
 };
 
 /**
+ * The dialects with no `IF EXISTS` on `DROP CONSTRAINT` or `DROP INDEX`, so a dropped foreign key or
+ * index is written bare. Oracle has neither form; Db2 (#786) neither, measured on Db2 LUW 12.1.0.0:
+ * `ALTER TABLE "C" DROP CONSTRAINT IF EXISTS "fk_c"` and `DROP INDEX IF EXISTS "ix_c"` are both
+ * SQL0104N at `EXISTS`, while the bare statements run.
+ */
+const NO_DROP_IF_EXISTS: ReadonlySet<DatabaseType> = new Set<DatabaseType>(["oracle", "db2"]);
+
+/**
  * Canonical type ids whose migration text carries no transaction wrapper, because no
  * `BEGIN;` this generator could emit would be both valid and meaningful for them (#284).
  *
@@ -220,14 +228,6 @@ const NO_COLUMN_MODIFICATION: Partial<Record<DatabaseType, { label: string; reas
  * `kafka` (#1088) joined on the same fact and for the same reason: its text is a JSON read
  * request, not SQL. `etcd` (#1089) joined the same way: its text is an etcdctl command line.
  */
-/**
- * The dialects with no `IF EXISTS` on `DROP CONSTRAINT` or `DROP INDEX`, so a dropped foreign key or
- * index is written bare. Oracle has neither form; Db2 (#786) neither, measured on Db2 LUW 12.1.0.0:
- * `ALTER TABLE "C" DROP CONSTRAINT IF EXISTS "fk_c"` and `DROP INDEX IF EXISTS "ix_c"` are both
- * SQL0104N at `EXISTS`, while the bare statements run.
- */
-const NO_DROP_IF_EXISTS: ReadonlySet<DatabaseType> = new Set<DatabaseType>(["oracle", "db2"]);
-
 const NO_TRANSACTION_WRAPPER: ReadonlySet<DatabaseType> = new Set<DatabaseType>([
   "oracle",
   "db2",
