@@ -1430,7 +1430,7 @@ describe("the engines whose table DDL is declined take no wrapper either", () =>
     );
     const match = declaration.exec(source);
     if (match === null) throw new Error(`${name} is not declared as a Set literal in migration-generator.ts`);
-    return [...match[1].matchAll(/"([a-z]+)"/g)].map((member) => member[1]);
+    return [...match[1].matchAll(/"([a-z0-9]+)"/g)].map((member) => member[1]);
   };
 
   test("every id NO_TABLE_DDL declines is one NO_TRANSACTION_WRAPPER leaves unwrapped", () => {
