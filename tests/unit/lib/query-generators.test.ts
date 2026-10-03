@@ -53,6 +53,59 @@ const sampleColumns: ColumnSchema[] = [
 // generateTableQuery
 // ============================================================================
 
+describe("generateTableQuery with a declared preview projection (#786)", () => {
+  // A projection shaped like Db2's, written here so the generator's rule is pinned on its own.
+  const projected = makeCaps({
+    defaultPort: 50000,
+    identifierQuoting: "double",
+    previewProjection: {
+      rules: [
+        { type: "^BIGINT$", expression: "VARCHAR({column})" },
+        { type: "^(CLOB|BLOB)\\(", expression: null },
+        { type: "^XML$", expression: null },
+      ],
+      omittedNote: "The driver cannot read these types.",
+      unprojectedNote: "The column list is not loaded, so every column is read as it is.",
+    },
+  });
+  const columns: ColumnSchema[] = [
+    { name: "ID", type: "INTEGER", nullable: false, isPrimary: true },
+    { name: "C_BIG", type: "BIGINT", nullable: true, isPrimary: false },
+    { name: "C_CLOB", type: "CLOB(1048576)", nullable: true, isPrimary: false },
+    { name: 'odd"name', type: "XML", nullable: true, isPrimary: false },
+  ];
+
+  test("names every column, reads each through its rule, and says which were left out", () => {
+    expect(generateTableQuery(["APP", "ALLTYPES"], projected, columns)).toBe(
+      '-- Not read by this preview: "C_CLOB" CLOB(1048576), "odd\\"name" XML. The driver cannot read these types.\n' +
+        'SELECT "ID", VARCHAR("C_BIG") AS "C_BIG" FROM "APP"."ALLTYPES";',
+    );
+  });
+
+  test("a table whose every column reads as it is carries no comment", () => {
+    expect(generateTableQuery(["APP", "T"], projected, [columns[0]])).toBe('SELECT "ID" FROM "APP"."T";');
+  });
+
+  test("with no column list it reads every column, under the unprojected note", () => {
+    expect(generateTableQuery(["APP", "T"], projected)).toBe(
+      '-- The column list is not loaded, so every column is read as it is.\nSELECT * FROM "APP"."T";',
+    );
+    expect(generateTableQuery(["APP", "T"], projected, [])).toBe(
+      '-- The column list is not loaded, so every column is read as it is.\nSELECT * FROM "APP"."T";',
+    );
+  });
+
+  test("a table whose every column is left out reads every column, under the unprojected note", () => {
+    expect(generateTableQuery(["APP", "T"], projected, [columns[2]])).toBe(
+      '-- The column list is not loaded, so every column is read as it is.\nSELECT * FROM "APP"."T";',
+    );
+  });
+
+  test("an engine that declares no projection still previews with SELECT *", () => {
+    expect(generateTableQuery(["users"], makeCaps(), columns)).toBe("SELECT * FROM users;");
+  });
+});
+
 describe("generateTableQuery", () => {
   test("SQL (postgres/mysql/sqlite) carries no row bound of its own", () => {
     // #816: the preview cap travels as the `limit` EXECUTION OPTION, not as text. A
