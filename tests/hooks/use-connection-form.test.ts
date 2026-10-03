@@ -1632,6 +1632,7 @@ describe("useConnectionForm", () => {
     prometheus: true,
     kafka: true,
     etcd: true,
+    neo4j: true,
   };
 
   test("dbTypes offers every database type a connection can carry", () => {

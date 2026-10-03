@@ -7,7 +7,7 @@ import type * as Monaco from "monaco-editor";
 import { Zap, LoaderCircle, TextAlignStart, Trash2, Copy, Play, Hash } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { format } from "sql-formatter";
+import { formatterForLanguage } from "@/lib/editor/dialect-editors";
 import { registerSQLCompletionProvider } from "@/lib/editor/sql-completions";
 import type { SchemaCompletionCache, SchemaColumnItem } from "@/lib/editor/sql-completions";
 import { registerMongoDBCompletionProvider } from "@/lib/editor/mongodb-completions";
@@ -15,6 +15,9 @@ import { registerLibreDBLanguage } from "@/lib/editor/libredb-language";
 import { registerRedisLanguage } from "@/lib/editor/redis-language";
 import { registerEtcdLanguage } from "@/lib/editor/etcd-language";
 import { registerPromqlLanguage } from "@/lib/editor/promql-language";
+import { CYPHER_LANGUAGE_ID, registerCypherLanguage } from "@/lib/editor/cypher-language";
+import { cypherCompletionSchemaOf, registerCypherCompletionProvider } from "@/lib/editor/cypher-completions";
+import { graphPolicyProfileOf } from "@/lib/db/graph-policy-profiles";
 import { configureMonacoLoader } from "@/lib/editor/monaco-loader";
 import { defineStudioThemes, STUDIO_THEME_DARK, STUDIO_THEME_LIGHT } from "@/lib/editor/monaco-theme";
 import { useEffectiveTheme } from "@/hooks/use-effective-theme";
@@ -72,7 +75,7 @@ interface QueryEditorProps {
   /** Called when content changes in real-time. Use sparingly as it triggers on every keystroke. */
   onContentChange?: (val: string) => void;
   onExplain?: () => void;
-  language?: "sql" | "json" | "libredb" | "redis" | "promql" | "etcd";
+  language?: "sql" | "json" | "libredb" | "redis" | "promql" | "etcd" | "graph-cypher";
   /**
    * The connected engine, whose grammar decides where a statement ends.
    *
@@ -86,6 +89,8 @@ interface QueryEditorProps {
 
 interface ParsedTable {
   name: string;
+  /** The object's address; Cypher completion reads a label or relationship type from its last segment. */
+  path?: string[];
   rowCount?: number;
   columns?: Array<{
     name: string;
@@ -171,9 +176,10 @@ export const QueryEditor = forwardRef<QueryEditorRef, QueryEditorProps>(
 
     // Format gate for the "Format SQL" context-menu action (#1085). Its label is fixed at
     // registration, so it is offered on an SQL tab only: a JSON tab formats through its toolbar
-    // button and the shortcut, and a PromQL, Redis or LibreDB tab has no formatter. Read at
-    // invocation time for the reason the explain gate above gives.
-    const canFormatSql = language === "sql";
+    // button and the shortcut, and a PromQL, Redis or LibreDB tab has no formatter. It also asks
+    // the dialect registry, as the toolbar does, so the entry is never offered where SQL's record
+    // gives no formatter. Read at invocation time for the reason the explain gate above gives.
+    const canFormatSql = language === "sql" && formatterForLanguage(language) !== undefined;
     const canFormatSqlRef = useRef(canFormatSql);
     const canFormatSqlKeyRef = useRef<Monaco.editor.IContextKey<boolean> | null>(null);
 
@@ -305,32 +311,18 @@ export const QueryEditor = forwardRef<QueryEditorRef, QueryEditorProps>(
       return { tableItems, columnMap, allColumns };
     }, [parsedSchema]);
 
+    // The formatter of the tab's language, from its `DIALECT_EDITORS` record: SQL's, the JSON one MongoDB and
+    // Kafka share, or none, in which case the toolbar draws no Format button and the shortcut does nothing.
+    const formatter = formatterForLanguage(language);
+
     const handleFormat = () => {
       if (!editorRef.current) return;
       const currentValue = editorRef.current.getValue();
       if (!currentValue) return;
+      if (formatter === undefined) return;
 
       try {
-        let formatted: string;
-        if (language === "json") {
-          // JSON formatting, for MongoDB queries and Kafka read requests alike. A read request is
-          // read from JSON.parse's value alone, so its formatted text reads as the typed one (#1088).
-          const parsed = JSON.parse(currentValue);
-          formatted = JSON.stringify(parsed, null, 2);
-        } else if (language === "sql") {
-          formatted = format(currentValue, {
-            language: "postgresql",
-            keywordCase: "upper",
-            dataTypeCase: "upper",
-            indentStyle: "tabularLeft",
-            logicalOperatorNewline: "before",
-            expressionWidth: 100,
-            tabWidth: 2,
-            linesBetweenQueries: 2,
-          });
-        } else {
-          return;
-        }
+        const formatted = formatter(currentValue);
         editorRef.current.setValue(formatted);
         onChange?.(formatted);
       } catch (e) {
@@ -499,13 +491,14 @@ export const QueryEditor = forwardRef<QueryEditorRef, QueryEditorProps>(
     }, []);
 
     const handleBeforeMount = (monacoInstance: typeof Monaco) => {
-      // Register the LibreDB, Redis and etcd command languages and PromQL (each idempotent)
+      // Register the LibreDB, Redis and etcd command languages, PromQL and Cypher (each idempotent)
       // so their tabs highlight correctly instead of being treated as JSON or SQL
-      // (#427, #1085, #1089).
+      // (#427, #1085, #1089, Neo4j spec 6.5).
       registerLibreDBLanguage(monacoInstance);
       registerRedisLanguage(monacoInstance);
       registerPromqlLanguage(monacoInstance);
       registerEtcdLanguage(monacoInstance);
+      registerCypherLanguage(monacoInstance);
 
       // Suppress Monaco's "Canceled" errors in console (with cleanup tracking)
       if (!originalConsoleErrorRef.current) {
@@ -546,6 +539,22 @@ export const QueryEditor = forwardRef<QueryEditorRef, QueryEditorProps>(
         return () => disposable.dispose();
       }
     }, [monaco, language, schemaCompletionCache, completesMongoDB]);
+
+    // Cypher completion provider (Neo4j spec 6.5, SR6). Its names are read from the schema objects'
+    // kind-qualified paths, never from the SQL cache's lowercased table names, and its CALL and SHOW
+    // allowlists from the connected engine's policy profile, looked up by type as the SQL provider
+    // gets its dialect.
+    const graphPolicy = graphPolicyProfileOf(databaseType);
+    useEffect(() => {
+      if (monaco && language === CYPHER_LANGUAGE_ID) {
+        const disposable = registerCypherCompletionProvider(
+          monaco,
+          cypherCompletionSchemaOf(parsedSchema),
+          graphPolicy,
+        );
+        return () => disposable.dispose();
+      }
+    }, [monaco, language, parsedSchema, graphPolicy]);
 
     // Every model change reaches here: a keystroke, and equally the writes Format, Clear
     // and the imperative setValue make, since Monaco reports those through the same
@@ -622,7 +631,7 @@ export const QueryEditor = forwardRef<QueryEditorRef, QueryEditorProps>(
             </Button>
           )}
 
-          {(language === "sql" || language === "json") && (
+          {formatter !== undefined && (
             <Button
               variant="ghost"
               size="sm"

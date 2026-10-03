@@ -427,6 +427,8 @@ const GRAMMAR_COVERAGE: Record<DatabaseType, "established" | "default"> = {
   kafka: "default",
   // An etcdctl command, not SQL (#1089): no SQL grammar is established for it, and none is read.
   etcd: "default",
+  // Cypher, not SQL: the graph lexer reads it, so no SQL grammar is established for it, and none is read.
+  neo4j: "default",
 };
 
 /**
@@ -516,6 +518,9 @@ const SQL_TEXT_COVERAGE: Record<DatabaseType, boolean> = {
   // An etcdctl command line is not SQL text: `commands.ts` reads its words by the shell's rules and a txn
   // body by etcdctl's, neither of which a SQL span reader follows (#1089).
   etcd: false,
+  // A Cypher statement is not SQL text: its strings escape with a backslash, `//` opens a comment and a
+  // backtick quotes a name, none of which a SQL span reader follows (Neo4j spec 5.5).
+  neo4j: false,
 };
 
 describe("readsSqlText", () => {

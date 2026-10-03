@@ -28,10 +28,10 @@ None of it is a GitHub issue.
 **Sections**
 
 - [SQL statement reading](#sql-statement-reading) — S2–S6 · 4
-- [Drivers and connections](#drivers-and-connections) — D1-D145, U17 · 89
+- [Drivers and connections](#drivers-and-connections) — D1-D150, U17 · 94
 - [Value interpolation](#value-interpolation) — V1
 - [Row editing](#row-editing) — R1–R3 · 3
-- [Studio UI and query execution](#studio-ui-and-query-execution) — X2-X19, U2-U71 · 58
+- [Studio UI and query execution](#studio-ui-and-query-execution) — X2-X19, U2-U72 · 59
 - [Dependencies](#dependencies) — P1-P7 · 7
 - [Documentation](#documentation) — DOC3-DOC9 · 6
 - [Release pipeline](#release-pipeline) — REL1-REL7 · 7
@@ -41,7 +41,7 @@ None of it is a GitHub issue.
 - [Security Phase 3 deferrals](#security-phase-3-deferrals) — K4
 - [Security scanner triage](#security-scanner-triage) — SCAN1 · 1
 - [Agent M1 deferrals (#328)](#agent-m1-deferrals-328) — A1–A8 · 7
-- [Agent M2 deferrals (#329)](#agent-m2-deferrals-329) — B2-B92 · 33
+- [Agent M2 deferrals (#329)](#agent-m2-deferrals-329) — B2-B93 · 34
 - [Passkey deferrals (#785)](#passkey-deferrals-785) — PK1-PK9 · 8
 - [MCP server deferrals (#246)](#mcp-server-deferrals-246)
 
@@ -345,6 +345,7 @@ fifth of five instances of one gap, and the fix already exists in the codebase.
 Amended 2026-09-23: the fix now exists twice, and the second copy is deliberate.
 Amended 2026-09-25: the mapping now exists three times, the third in the Kafka provider (#1088), deliberate for the same reason.
 Amended 2026-09-30: the mapping now exists four times, the fourth in the etcd provider (#1089), `connection-options.ts`, deliberate for the same reason; like Kafka's it is a mapping only, over grpc-js's own TLS, and it adds the IP-identity rule of the etcd design's E5.
+Amended 2026-10-03: the shared helper this entry asks for now exists outside any provider directory, `src/lib/db/http/node-transport.ts`: `createNodeTransport` is the request path for plaintext and TLS alike, built on the Prometheus shape with `rejectRedirect` on both, and `nodeTlsMaterial` is the one TLS mapping a REST provider takes, so later providers reuse it instead of adding a copy; no provider uses it yet, the Qdrant provider will be its first consumer, and moving Couchbase and Prometheus onto it, and the five `fetch` transports, stays open under this entry.
 
 `ssl.caCert`, `ssl.clientCert`, `ssl.clientKey` and `ssl.rejectUnauthorized` reach the
 driver on every provider that uses one. On the providers that speak HTTP through global
@@ -1995,7 +1996,56 @@ Not fixed there: the SQLite provider is outside that PR.
 
 **Done when:** a statement that changes no row reports no changed rows on both SQLite drivers, read from the statement itself rather than the connection's last count, and a test runs a `DELETE` then a `CREATE TABLE` on one connection and pins the second answer.
 
-### D140. Db2 inline row edit, data import and Create Table are off until db2-node decodes non-ASCII text
+### D140. Neo4j calls no APOC procedure, so a measured read-only subset is unavailable
+
+The Neo4j read policy refuses the `apoc.` and `gds.` namespaces whole and allows eight procedures (`NEO4J_POLICY_PROFILE` in `src/lib/db/providers/graph/neo4j/profile.ts`), because `apoc.load.*` reaches the network and the file system and READ mode does not stop it (`docs/providers/neo4j.md` section 3.4).
+Many APOC procedures and functions are pure reads, such as `apoc.meta.*` and the text and collection helpers, and users of a graph with APOC installed reach for them.
+The compose image installs no APOC, so no capture says which of them stay within the database.
+
+Found 2026-10-03 while designing the Neo4j provider (decision N10).
+
+**Done when:** a named APOC subset is allowlisted by exact name after each one is measured against a server with APOC installed for network, file and write reach, the policy corpus holds each allowed name and a refused neighbour, and the provider doc lists the subset.
+
+### D141. Memgraph has no provider on the graph layer
+
+Memgraph speaks Bolt and Cypher, and the graph layer (`src/lib/db/graph/`) was designed for a second engine, but the Memgraph 3.13.1 probe of the Neo4j design found that its catalog has none of the `db.*` procedures, its `EXPLAIN` reports `rw` for reads and writes alike, it enforces READ mode only in an explicit transaction and never on an auto-commit `session.run`, and it stops a running statement only on its timeout or `TERMINATE TRANSACTIONS <id>`, not on a closed session.
+So it needs its own catalog and gate, and an execution strategy the Bolt transport does not have yet: explicit READ transactions and a terminate by transaction id.
+Memgraph Community is licensed under the Business Source License 1.1, whose clause on competing works is a question for the maintainer before any design.
+
+Found 2026-10-03 while designing the Neo4j provider (decision N6).
+
+**Done when:** the licence question has a recorded answer, and then a `memgraph` provider supplies its own `GraphEngineProfile` and adds its execution strategy to the Bolt transport in its own PR, editing nothing under `src/lib/db/providers/graph/neo4j/`, with a live probe of every surface.
+
+### D142. A Neo4j connection through an SSH tunnel cannot verify the server's certificate
+
+`boltEndpointOf` in `src/lib/db/graph/bolt/uri.ts` refuses a verifying TLS mode on a tunnelled connection, because the driver would check the certificate against the tunnel's local `127.0.0.1` rather than the server's name, so a tunnelled Neo4j connection runs TLS only with verification off.
+`neo4j-driver-lite` 6.2.0 has a `resolver` option that could dial the tunnel while the URI keeps the server's name, and it has not been measured; the provider passes no resolver, by its fixed configuration.
+
+Found 2026-10-03 while designing the Neo4j provider's TLS mapping.
+
+**Done when:** the resolver, or another measured route, verifies the far end's certificate through a real tunnel, `verify-full` connects through it and refuses an address the certificate does not carry, and `tests/unit/db/graph/bolt-client.test.ts` pins the configuration.
+
+### D143. A Neo4j connection reads one database
+
+A Neo4j connection's one container is its `database`, or the user's home database resolved at connect (`GraphBaseProvider.connect` in `src/lib/db/graph/graph-base-provider.ts`), and another database is another connection.
+An Enterprise server with several databases therefore needs one connection per database, and the tree cannot show them side by side.
+One container was chosen so that a statement can never run against a database the tree is not showing.
+
+Found 2026-10-03 while designing the Neo4j provider.
+
+**Done when:** a connection lists every database the user may read as its containers, each statement runs on the database its tab names and on no other, the database a statement ran on is shown with its result, and a test drives two databases through one connection.
+
+### D144. Two first requests for one connection can orphan a connected provider
+
+`getOrCreateProvider` in `src/lib/db/factory.ts` awaits `providerCacheKey`, `createSSHTunnel` and `provider.connect()` between its cache lookup and its `providerCache.set`, and nothing records a creation in flight.
+Two requests that miss the cache for the same connection at once each build and connect a provider, and the later `providerCache.set` overwrites the earlier entry, whose provider is never disconnected and is out of reach of the idle sweep.
+It predates the Neo4j provider, but a Bolt provider now leaks a driver holding up to four pooled sockets rather than only HTTP handles; `GraphBaseProvider.connect` already makes an overlapping connect on one instance await the attempt in flight, which this race does not reach.
+
+Found 2026-10-03 while reviewing the Neo4j provider (PR #1239, review N6).
+
+**Done when:** concurrent `getOrCreateProvider` calls for one cache key share one creation, or the loser disconnects its provider and closes a tunnel it created, and a test drives two overlapping first calls with a provider that counts its connects and disconnects.
+
+### D145. Db2 inline row edit, data import and Create Table are off until db2-node decodes non-ASCII text
 
 `db2-node` 1.0.22 decodes a CHAR or VARCHAR value holding any non-ASCII byte as EBCDIC 037, so a read-then-write-back stores corrupted text ([gurungabit/db2-node#12](https://github.com/gurungabit/db2-node/issues/12), K1 in `docs/providers/db2.md`).
 So no kind in `DB2_OBJECT_KINDS` (`src/lib/db/providers/sql/db2/capabilities.ts`) declares `acceptsRowWrites`, and `db2Capabilities` sets `supportsInlineRowEdit` and `supportsCreateTable` to false, which also closes the data import dialog.
@@ -2005,7 +2055,7 @@ Found 2026-10-03 by the Db2 provider's driver spike (#786).
 
 **Done when:** a `db2-node` release reads "Grüße" back as written on Db2 12.1 and 11.5, `tests/live/db2-known-issues.ts` prints `GONE` for K1, and Db2 declares `acceptsRowWrites` on its table kind, `supportsInlineRowEdit` and `supportsCreateTable`, with a measured column-type row and an import round trip of non-ASCII text in the provider tests.
 
-### D141. Db2 monitoring reads only the version and two catalog counts
+### D146. Db2 monitoring reads only the version and two catalog counts
 
 `src/lib/db/providers/sql/db2/monitoring.ts` reads the service level and the table and index counts, and answers every other panel empty with a label that says so.
 The #787 branch carried measured SQL for sessions (`MON_GET_CONNECTION`), slow queries (`MON_GET_PKG_CACHE_STMT`, which is empty unless `mon_req_metrics` or `mon_act_metrics` is on), buffer-pool hit ratio, storage, uptime, deadlocks and index statistics, measured on Db2 11.5 through `ibm_db`.
@@ -2014,7 +2064,7 @@ Found 2026-10-03 while scoping the Db2 provider's first version (#786).
 
 **Done when:** each panel is read through `db2-node`, re-measured on 12.1 and 11.5, refused reads answer an empty panel rather than throwing, and `docs/providers/db2.md` section 9 names what each panel reads.
 
-### D142. The Db2 schema diff writes a column modification as a comment
+### D147. The Db2 schema diff writes a column modification as a comment
 
 `NO_COLUMN_MODIFICATION` in `src/lib/schema-diff/migration-generator.ts` holds `db2`, because Db2 changes a column with `ALTER TABLE ... ALTER COLUMN ... SET DATA TYPE` and may leave the table REORG-pending, after which most statements on it fail with SQL0668N until a REORG.
 The #787 branch drafted a branch that emits `SET DATA TYPE`, `SET`/`DROP NOT NULL` and `SET`/`DROP DEFAULT` with a REORG advisory comment, never measured live.
@@ -2023,7 +2073,7 @@ Found 2026-10-03 while scoping the Db2 provider's first version (#786).
 
 **Done when:** the column modification is expressed through a declared capability rather than a `dialect === "db2"` branch, each statement it emits runs on Db2 12.1 against the fixture, the REORG-pending advisory names the table, and `tests/unit/schema-diff/migration-generator.test.ts` moves `db2` out of the comment-only coverage.
 
-### D143. Db2 has no transactions, SANDBOX or query cancel
+### D148. Db2 has no transactions, SANDBOX or query cancel
 
 `db2Capabilities` sets `supportsTransactions` to false and the provider implements no `cancelQuery`: it holds one `Client` with no session of its own for a transaction, and `db2-node` 1.0.22 offers no interrupt, since `close()` waits for the running statement and `queryTimeout` leaves the statement running on the server (K14 in `docs/providers/db2.md`).
 
@@ -2031,7 +2081,7 @@ Found 2026-10-03 by the Db2 provider's driver spike (#786).
 
 **Done when:** a driver release offers a real interrupt or a server-side cancel the provider can send on a second connection, the provider implements `cancelQuery` and the transaction lifecycle on a held connection, and a live test cancels a long statement and sees it end on the server.
 
-### D144. Windows channels and the Visual C++ runtime the Db2 addon needs
+### D149. Windows channels and the Visual C++ runtime the Db2 addon needs
 
 The win32 addon of `db2-node` imports `VCRUNTIME140.dll`, so a Windows machine without the Microsoft Visual C++ 2015-2022 x64 redistributable cannot load the Db2 driver.
 winget and Chocolatey declare it as a dependency; the portable zip, Scoop and `npx @libredb/studio` on Windows rely on the machine having it, and nothing has been measured on a clean Windows install.
@@ -2040,7 +2090,7 @@ Found 2026-10-03 while packaging the Db2 provider (#786).
 
 **Done when:** a clean Windows 11 VM without the redistributable is measured on every Windows channel, each channel either installs the runtime or says what to install before the first Db2 connection, and a missing runtime reaches the user as a sentence naming it rather than a load error.
 
-### D145. The Db2 schema diff mixes schemas and writes views as tables, and nothing can turn it off
+### D150. The Db2 schema diff mixes schemas and writes views as tables, and nothing can turn it off
 
 Nothing in the provider capabilities disables schema diff or migration DDL for an engine, so a Db2 connection offers both with the shared engine's limits, measured on the Db2 provider branch.
 The diff keys objects by name only, so `APP.T` and `REPORTING.T` collide; it writes a view or a materialized query table as `CREATE TABLE`; and it quotes a cross-schema reference `SCHEMA.TABLE` as one identifier.
@@ -3184,6 +3234,15 @@ Found by the etcd browser pass (#1089).
 Not fixed there: the tab's columns are not declared per provider anywhere, and adding that is a change to every engine's tab.
 
 **Done when:** the provider declares which table-stat columns it fills, as other capability-driven surfaces do, the tab draws only those, and a test renders it for an engine that fills none of the four.
+
+### U72. Graph results are JSON cells, with no graph view
+
+A Neo4j result shows nodes, relationships and paths as tagged JSON cells (`"~graph"`, `src/lib/db/graph/values.ts`) with `Node`, `Relationship`, `Path` or `Mixed` in the column header, and nothing draws them as a graph.
+The tag was added so that a renderer can find graph values in any `QueryResult` without a provider change.
+
+Found 2026-10-03 while designing the Neo4j provider (decision N7).
+
+**Done when:** a result holding graph values offers a graph tab beside the grid that draws its nodes and relationships, bounded by the result's own rows, and a component test renders a path result in it.
 
 ## Dependencies
 
@@ -4708,6 +4767,15 @@ Found by the etcd agent pass (#1089).
 Not fixed there: a model's choice is not something the snapshot can force, and the check below is its own change.
 
 **Done when:** a server-side check flags a drafted read over a whole partly readable group, by the group's name only so E13 holds, and the answer card shows the flag, with a test that a draft over `/config/` is flagged while one over `/app/` is not.
+
+### B93. Neo4j has no agent execution and no MCP `run_read_query`
+
+The Neo4j provider implements no `queryReadOnly`, so `AGENT_EXECUTION_ENGINES` does not name it, agent auto mode refuses it, and MCP `run_read_query` answers that the engine is not served; plan mode and the MCP metadata tools work.
+Both execution paths guard a statement with SQL readers (`src/lib/db/operations/statement-guard.ts`), and a Cypher statement needs a contract of its own: its read policy, gate and READ session exist, but the agent's and MCP's bounds, audit and refusal shapes have not been measured on it, and the `LOAD CSV` and APOC reach the policy refuses has to be shown refused on that path too.
+
+Found 2026-10-03 while designing the Neo4j provider (spec 6.4).
+
+**Done when:** `Neo4jProvider` implements `queryReadOnly` through the same policy, gate and READ session as the editor, `AGENT_EXECUTION_ENGINES` and `RUN_READ_QUERY_ENGINES` name Neo4j, and an agent run and an MCP call each drive a `LOAD CSV` and a write to their refusal in a test.
 
 ## Passkey deferrals (#785)
 

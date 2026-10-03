@@ -21,8 +21,11 @@ import {
   KafkaIcon,
   EtcdIcon,
   Db2Icon,
+  Neo4jIcon,
 } from "@/components/icons/db-icons";
 import type { DatabaseType } from "@/lib/types";
+import type { HostUriScheme } from "@/lib/connection-host-uri";
+import { CREDENTIAL_WARNINGS, type CredentialWarning } from "@/lib/db/credential-warnings";
 
 // DB brand icons share the same interface as LucideIcon (className + SVG props)
 export type DBIcon = LucideIcon | React.FC<React.SVGAttributes<SVGSVGElement> & { className?: string }>;
@@ -74,6 +77,12 @@ export interface DatabaseUIConfig {
    */
   fieldHints?: Partial<Record<ConnectionField, string>>;
   /**
+   * The sentence under the connection dialog's Read-only toggle, where this engine's mode differs from
+   * the dialog's own sentence, which says the mode can be turned off. Neo4j declares one because its
+   * connections are read-only whether or not the box is ticked (spec A7). Read through `readOnlyHint`.
+   */
+  readOnlyHint?: string;
+  /**
    * The choices of a field the connection dialog draws as a select rather than a text box, each a
    * stored value and its label, offered after an empty "None" choice that stores nothing (#1088).
    * The dialog draws the select where the engine takes the field, the same condition
@@ -87,6 +96,20 @@ export interface DatabaseUIConfig {
    * dialog offers the tunnel. Read through `offersSshTunnel`, never directly.
    */
   showSshTunnel?: false;
+  /**
+   * The schemes the connection dialog's Host box takes as a whole address, split into Host and Port on paste
+   * and at save (src/lib/connection-host-uri.ts), absent meaning the box takes a host alone, as it always has.
+   * Read through `hostUriSchemes`, never directly. The connection-string box is a different reader and keeps
+   * `http://` and `https://` for ClickHouse.
+   */
+  hostAcceptsUri?: readonly HostUriScheme[];
+  /**
+   * The credentials this engine warns about, taken by reference from `CREDENTIAL_WARNINGS` in
+   * src/lib/db/credential-warnings.ts through a getter every entry is given below, and never written out in an
+   * entry, so the dialog's warning and the seed loader's refusal read one record. That module holds the data because this one imports React icons, which the seed
+   * loader must not.
+   */
+  credentialWarnings?: readonly CredentialWarning[];
 }
 
 /** One addressing field, named by the same list that decides whether a save writes it. */
@@ -422,6 +445,27 @@ export const DB_UI_CONFIG: Record<DatabaseType, DatabaseUIConfig> = {
         "etcd receives the password, then a token on every call, so a password needs an SSL mode other than disable, with or without an SSH tunnel.",
     },
   },
+  neo4j: {
+    // A generic graph glyph, never Neo4j's logo (spec E12).
+    icon: Neo4jIcon,
+    // No identity hue is free. `hue-fuchsia` is Prometheus's; its `-alt` step is a second identity only
+    // because it clears the separation test, which is why `fuchsia` joined IDENTITY_ALTS in
+    // tests/unit/theme-accent-contrast.test.ts with this entry, as `blue` did with etcd's.
+    color: "text-hue-fuchsia-alt",
+    label: "Neo4j",
+    // The Bolt port. The HTTP port (7474) serves the browser and the HTTP API, which this provider never uses.
+    defaultPort: "7687",
+    // No URI scheme to paste: the provider builds its bolt:// URI from Host, Port and the SSL panel, and
+    // connection-string-parser.ts reads no Neo4j URI (spec 6.1).
+    showConnectionStringToggle: false,
+    // The SSL panel and the SSH tunnel stay offered: a bolt:// URI dials the one server it names, unlike a
+    // routing neo4j:// URI, which this provider never builds. An empty database is the server's home database.
+    connectionFields: ["host", "port", "user", "password", "database"],
+    fieldHints: { database: "Leave empty to use the server's home database." },
+    // The dialog's own sentence says the mode can be turned off, which is false here (spec A7).
+    readOnlyHint:
+      "Neo4j connections are read-only in this version, whether or not this is ticked: this user's write privileges are never used.",
+  },
   libredb: {
     icon: LibreDBIcon,
     color: "text-hue-violet",
@@ -431,6 +475,15 @@ export const DB_UI_CONFIG: Record<DatabaseType, DatabaseUIConfig> = {
     connectionFields: ["database"],
   },
 };
+
+// Every entry's `credentialWarnings` reads its type's array from the shared record on each access, so no entry
+// writes one out or holds a copy, and a declaration added to the record is the entry's at once.
+for (const type of Object.keys(DB_UI_CONFIG) as DatabaseType[]) {
+  Object.defineProperty(DB_UI_CONFIG[type], "credentialWarnings", {
+    get: () => CREDENTIAL_WARNINGS[type],
+    enumerable: true,
+  });
+}
 
 export function getDBConfig(type: DatabaseType): DatabaseUIConfig {
   return DB_UI_CONFIG[type];
@@ -465,6 +518,20 @@ export function isFileBased(type: DatabaseType): boolean {
  */
 export function takesConnectionField(type: DatabaseType, field: ConnectionField): boolean {
   return DB_UI_CONFIG[type].connectionFields.includes(field);
+}
+
+const NO_HOST_URI_SCHEMES: readonly HostUriScheme[] = Object.freeze([]);
+
+/**
+ * The schemes the Host box takes as a whole address for this engine: its `hostAcceptsUri`, or none.
+ *
+ * One rule, two readers in `useConnectionForm`, as `offersSshTunnel` has: the host setter it returns, which
+ * splits a pasted address on arrival, and `buildConnection`, which splits one that was typed and which no path
+ * to a tested or saved connection bypasses. Loading a connection to edit reads neither, so its host shows as it
+ * was saved.
+ */
+export function hostUriSchemes(type: DatabaseType): readonly HostUriScheme[] {
+  return DB_UI_CONFIG[type].hostAcceptsUri ?? NO_HOST_URI_SCHEMES;
 }
 
 /**
@@ -505,4 +572,12 @@ export function connectionFieldLabel(config: DatabaseUIConfig, field: Connection
  */
 export function connectionFieldHint(config: DatabaseUIConfig, field: ConnectionField): string | undefined {
   return config.fieldHints?.[field];
+}
+
+/** The sentence under the Read-only toggle: the engine's own where it declares one, else the dialog's. */
+export function readOnlyHint(config: DatabaseUIConfig): string {
+  return (
+    config.readOnlyHint ??
+    "Writes, value edits and maintenance are refused on this connection. You can turn this off here, so on your own connection it is a safety rail, not a permission."
+  );
 }

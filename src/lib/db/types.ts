@@ -24,6 +24,7 @@ import type {
   IndexSchema,
   ForeignKeySchema,
 } from "../types";
+import { declaresDialect, dialectSpec } from "./query-dialects";
 
 // ============================================================================
 // Pool Configuration
@@ -280,13 +281,20 @@ export type TypedConfirmationAsk =
  * before this gate the route sent Redis,
  * LibreDB and Prometheus the MongoDB document, which only MongoDB reads (#1085).
  *
+ * A dialect's answer is its record's `offersColumnProfiling` in `QUERY_DIALECTS`
+ * (`src/lib/db/query-dialects.ts`), false for all four. It is read beside `"json"` only: the language is read
+ * first, so a dialect declared beside `"sql"` is offered profiling, while `offersCountQuery` below withholds its
+ * count. The asymmetry is kept on purpose, because changing either answer would change what a menu offers. A
+ * declared dialect with no record, which only a host's own declaration can name, is refused, as it always was.
+ *
  * Unknown capabilities are not a permission, for the reason `maintenanceControl` gives:
  * `/api/db/provider-meta` answers with nothing both while it is in flight and when it failed.
  */
 export function offersColumnProfiling(capabilities: ProviderCapabilities | undefined): boolean {
   if (capabilities === undefined) return false;
   if (capabilities.queryLanguage === "sql") return true;
-  return capabilities.queryLanguage === "json" && capabilities.queryDialect === undefined;
+  const profilesDialect = dialectSpec(capabilities)?.offersColumnProfiling ?? !declaresDialect(capabilities);
+  return capabilities.queryLanguage === "json" && profilesDialect;
 }
 
 /**
@@ -301,19 +309,22 @@ export function offersColumnProfiling(capabilities: ProviderCapabilities | undef
  * The two languages are named rather than `"promql"` excluded, so a language added later is not
  * offered the generator until somebody decides that it should be.
  *
- * The `"kafka"` dialect is refused by an arm of its own, for the reason PromQL is (#1088): a topic's
+ * A dialect refuses it through its record's `offersCodeGeneration: false` in `QUERY_DIALECTS`
+ * (`src/lib/db/query-dialects.ts`), and a record that says `true` leaves the answer to the language.
+ *
+ * The `"kafka"` dialect's record refuses it, for the reason PromQL is (#1088): a topic's
  * columns are the fixed shape of a read result, not a record an application stores, and the models
  * written over them reject the rows a read returns, a `Date` for a timestamp that arrives as an ISO
  * string and a record type for a value that arrives as text, base64 or a Confluent schema label.
  *
- * The `"etcd"` dialect is refused by the same arm (#1089, section 3.3): a key-prefix group's columns are
+ * The `"etcd"` dialect's record refuses it too (#1089, section 3.3): a key-prefix group's columns are
  * the fixed shape of a `get` row, and a model written over them is not a record an application stores in
  * a key-value store.
  *
  * Unknown capabilities are not a permission, as for `offersColumnProfiling`.
  */
 export function offersCodeGeneration(capabilities: ProviderCapabilities | undefined): boolean {
-  if (capabilities?.queryDialect === "kafka" || capabilities?.queryDialect === "etcd") return false;
+  if (dialectSpec(capabilities)?.offersCodeGeneration === false) return false;
   return capabilities?.queryLanguage === "sql" || capabilities?.queryLanguage === "json";
 }
 
@@ -331,6 +342,9 @@ export function offersCodeGeneration(capabilities: ProviderCapabilities | undefi
  * (#1089), and `"promql"` is not offered it either: `count()` in
  * PromQL counts series at an instant, which is not the row count this action promises.
  *
+ * A declared dialect is offered it only where its record's `offersCountQuery` in `QUERY_DIALECTS`
+ * (`src/lib/db/query-dialects.ts`) says so, which none does, and a declared dialect with no record is refused.
+ *
  * A derived grouping is refused on top of the language, because a Redis `user:*` row is a
  * summary this server built and there is no object to address (#427).
  *
@@ -338,8 +352,24 @@ export function offersCodeGeneration(capabilities: ProviderCapabilities | undefi
  */
 export function offersCountQuery(capabilities: ProviderCapabilities | undefined): boolean {
   if (capabilities === undefined) return false;
-  if (capabilities.queryDialect !== undefined || capabilities.tablesAreDerivedGroupings === true) return false;
+  if (capabilities.tablesAreDerivedGroupings === true) return false;
+  if (declaresDialect(capabilities) && dialectSpec(capabilities)?.offersCountQuery !== true) return false;
   return capabilities.queryLanguage === "sql" || capabilities.queryLanguage === "json";
+}
+
+/**
+ * Whether the schema diagram (ERD) may be offered for this engine, asked by every entry point that opens
+ * it: the sidebar button and the command palette item, in both shells.
+ *
+ * The diagram draws objects as tables and infers an edge from a column named like another table's
+ * `_id`. A graph's relationship types are not tables and its edges are data, not columns, so on a
+ * `"cypher"` connection the heuristic would invent edges and draw none of the real ones (Neo4j spec, SR20).
+ * Every other language keeps the diagram it always had, and so does a connection whose capabilities have
+ * not answered yet: the entry point was offered before this gate existed, and only a declared Cypher is
+ * known not to fit it.
+ */
+export function offersSchemaDiagram(capabilities: ProviderCapabilities | undefined): boolean {
+  return capabilities?.queryLanguage !== "cypher";
 }
 
 // ============================================================================
@@ -557,16 +587,20 @@ export interface ProviderCapabilities {
    * (MongoDB) branch. So a new member lands with an explicit arm in every reader, or with a test
    * pinning that the branch it falls into is right for it. `"promql"` is the Prometheus provider's
    * (#1085), and it declares no `queryDialect`, because PromQL is not a kind of JSON.
+   * `"cypher"` is the graph providers' (Neo4j spec 6.5), declared with no `queryDialect` for the
+   * same reason: Cypher is neither JSON nor SQL. Its tabs render in the `graph-cypher` language, a
+   * tree click writes a bounded Cypher read, and the count, profiling and code-generation gates
+   * below refuse it by naming the languages they serve.
    *
    * Published through `src/exports/types.ts`, so widening it breaks a consumer's exhaustive
    * switch over it; that ships with a release note, not a compatibility layer.
    */
-  queryLanguage: "sql" | "json" | "promql";
+  queryLanguage: "sql" | "json" | "promql" | "cypher";
   /**
    * Optional client-side query dialect, declared only beside `queryLanguage: "json"`, where it
    * names the grammar the editor text really is: JSON of this product's own schema (Kafka) or a
    * command line (Redis, LibreDB, etcd), for which `"json"` means only "not SQL". `queryLanguage`
-   * says SQL, JSON or PromQL; for a `"json"` provider the query generators otherwise
+   * says SQL, JSON, PromQL or Cypher; for a `"json"` provider the query generators otherwise
    * assume MongoDB syntax.
    * A provider sets `queryDialect` to opt its tables into a custom client-side
    * generator (see `query-generators.ts`), and it is checked BEFORE
@@ -585,6 +619,11 @@ export interface ProviderCapabilities {
    * `"etcd"` is the etcd provider's (#1089): its editor text is a subset of etcdctl's command line,
    * read by the provider's own parser. It landed the way Kafka's did: an explicit arm in every reader
    * of either field, or a test pinning that the branch it falls into is right for etcd.
+   *
+   * Those arms are now records: a member added here does not compile until it has one in each of
+   * `QUERY_DIALECTS` (`src/lib/db/query-dialects.ts`), `DIALECT_EDITORS` (`src/lib/editor/dialect-editors.ts`)
+   * and `DIALECT_GENERATORS` (`src/lib/query-generators.ts`), and every other reader of this field and of
+   * `queryLanguage` is held to a closed list by `tests/unit/lib/dialect-reader-allowlist.test.ts`.
    */
   queryDialect?: "libredb" | "redis" | "kafka" | "etcd";
   supportsExplain: boolean;

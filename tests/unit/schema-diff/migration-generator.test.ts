@@ -1046,6 +1046,7 @@ describe("generateMigrationSQL: SQLite's grammar declares a foreign key only ins
     prometheus: "engine-has-no-foreign-key",
     kafka: "engine-has-no-foreign-key",
     etcd: "engine-has-no-foreign-key",
+    neo4j: "engine-has-no-foreign-key",
   };
 
   for (const [dialectId, entry] of Object.entries(GRAMMAR)) {
@@ -1161,6 +1162,8 @@ const MODIFIED_COLUMN_COVERAGE: Record<
   kafka: { label: "Apache Kafka", reason: "not rows with declared columns" },
   // Not a table store (#1089): a key-prefix group holds keys whose values are bytes.
   etcd: { label: "etcd", reason: "not rows with declared columns" },
+  // Not a table store: a label groups nodes whose properties are not declared columns.
+  neo4j: { label: "Neo4j", reason: "not declared columns" },
 };
 
 /**
@@ -1334,6 +1337,7 @@ describe("generateMigrationSQL: dialects that cannot modify a column", () => {
           "prometheus",
           "kafka",
           "etcd",
+          "neo4j",
         ].includes(dialect)
       ) {
         expect(sql).toContain(`-- ${expected.label}: Cannot generate table DDL.`);
@@ -1394,6 +1398,7 @@ const TRANSACTION_WRAPPER_COVERAGE: Record<DatabaseType, "BEGIN;" | "BEGIN TRANS
   prometheus: false, // not SQL text at all (`NON_SQL_DIALECTS`), and no table DDL to wrap (`NO_TABLE_DDL`)
   kafka: false, // a JSON read request, not SQL text (`NON_SQL_DIALECTS`), and no table DDL to wrap (`NO_TABLE_DDL`)
   etcd: false, // an etcdctl command, not SQL text (`NON_SQL_DIALECTS`), and no table DDL to wrap (`NO_TABLE_DDL`)
+  neo4j: false, // a Cypher statement, not SQL text (`NON_SQL_DIALECTS`), and no table DDL to wrap (`NO_TABLE_DDL`)
 };
 
 // Both creation and modification paths must use the same wrapper policy.
@@ -1423,6 +1428,7 @@ describe("generateMigrationSQL: transaction wrapper by dialect", () => {
             "prometheus",
             "kafka",
             "etcd",
+            "neo4j",
           ].includes(dialect)
         ) {
           expect(sql).toMatch(/^CREATE TABLE /m);
@@ -1729,6 +1735,9 @@ describe("an Oracle column's declared type reaches the DDL (#1139)", () => {
         { name: "C_FLOAT", type: "FLOAT(10)", baseType: "FLOAT", nullable: true, isPrimary: false },
         { name: "C_TIMESTAMP", type: "TIMESTAMP(3)", nullable: true, isPrimary: false },
         { name: "C_DATE", type: "DATE", nullable: true, isPrimary: false },
+        { name: "C_UROWID", type: "UROWID(100)", baseType: "UROWID", nullable: true, isPrimary: false },
+        // 26ai only, so it is not in the fixture: tests/live/oracle-column-type.ts creates it.
+        { name: "V_3_FLOAT32", type: "VECTOR(3,FLOAT32,DENSE)", baseType: "VECTOR", nullable: true, isPrimary: false },
       ],
       indexes: [],
     },
@@ -1747,6 +1756,10 @@ describe("an Oracle column's declared type reaches the DDL (#1139)", () => {
     expect(sql).toContain(`"C_FLOAT" FLOAT(10)`);
     expect(sql).toContain(`"C_TIMESTAMP" TIMESTAMP(3)`);
     expect(sql).toContain(`"C_DATE" DATE`);
+    // #1209: a bare UROWID is accepted, and creates a UROWID(4000).
+    expect(sql).toContain(`"C_UROWID" UROWID(100)`);
+    // A bare VECTOR is accepted too, and creates a VECTOR(*,*,DENSE).
+    expect(sql).toContain(`"V_3_FLOAT32" VECTOR(3,FLOAT32,DENSE)`);
     // The defect this replaces: a bare DATA_TYPE. `CREATE TABLE t (x VARCHAR2)` is ORA-00906.
     expect(sql).not.toMatch(/"C_VARCHAR2" VARCHAR2[^(]/);
   });

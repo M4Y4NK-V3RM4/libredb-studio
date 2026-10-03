@@ -41,35 +41,39 @@ export const SHOWCASE_RANK: Record<DatabaseType, number> = {
   // first-rank name for anyone who has met a wide-column store, and it is the only
   // one of those on this page.
   cassandra: 11,
-  couchbase: 12,
-  clickhouse: 13,
-  druid: 14,
+  // Behind Cassandra and ahead of the analytical stores, for the reason Cassandra sits where it
+  // does: the best-known graph database, a first-rank name for anyone who has met one, and the
+  // only one on this page.
+  neo4j: 12,
+  couchbase: 13,
+  clickhouse: 14,
+  druid: 15,
   // Ahead of the embedded store and behind the three analytical ones: Trino is the
   // name an evaluator is most likely to already know out of this last group, because
   // it is the engine a data platform is usually met THROUGH rather than one more
   // store to choose between.
-  trino: 15,
+  trino: 16,
   // Behind Trino and ahead of libSQL (#1085): a name every cloud-native evaluator already
   // knows, but met as the metrics store beside their databases rather than as one of them,
   // so it follows the query engine and leads the two newest names on this page.
-  prometheus: 16,
+  prometheus: 17,
   // Behind Prometheus and ahead of libSQL (#1088), for the reason Prometheus sits where it does:
   // the message log a cloud-native team runs beside its databases, as well known to that
   // evaluator as Prometheus and met the same way, beside the databases rather than as one of them.
-  kafka: 17,
+  kafka: 18,
   // Behind Kafka and ahead of libSQL (#1089), for the reason the two before it sit where they do: the
   // store a Kubernetes control plane keeps its state in, known to the same evaluator and met beside the
   // databases rather than as one of them.
-  etcd: 18,
+  etcd: 19,
   // Behind etcd and ahead of the embedded store: libSQL is the name on this page an
   // evaluator is least likely to have met, but it is a product name (Turso's server)
   // rather than our own, so it goes ahead of `libredb`.
-  libsql: 19,
+  libsql: 20,
   // Last on purpose: the embedded store is the least recognisable name here. It is
   // still shown - it is a shipped provider with a doc (docs/providers/libredb.md), an
   // icon and a slot in the connection picker, so omitting it would make the login page
   // contradict the app (issue #425, step 2).
-  libredb: 20,
+  libredb: 21,
 };
 
 /**

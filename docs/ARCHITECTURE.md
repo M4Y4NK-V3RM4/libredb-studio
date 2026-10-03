@@ -4,7 +4,7 @@ This document outlines the architectural patterns, tech stack, and system design
 
 ## System Overview
 
-LibreDB Studio is a hybrid, cloud-native database management tool that provides an IDE-like experience in the browser. It supports **21 database backends** via a Strategy Pattern abstraction: PostgreSQL, MySQL, SQLite, libSQL, DuckDB, Oracle, Db2 LUW, SQL Server, MongoDB, Couchbase, ClickHouse, Apache Druid, Trino, Apache Cassandra, Elasticsearch, OpenSearch, Redis, Prometheus, Apache Kafka, etcd, LibreDB. The count is the `SHIPPED` record in [`src/lib/db/compatibility.ts`](../src/lib/db/compatibility.ts), which is exhaustive over `DatabaseType`; `elasticsearch` and `opensearch` are two ids served by one provider module.
+LibreDB Studio is a hybrid, cloud-native database management tool that provides an IDE-like experience in the browser. It supports **22 database backends** via a Strategy Pattern abstraction: PostgreSQL, MySQL, SQLite, libSQL, DuckDB, Oracle, Db2 LUW, SQL Server, MongoDB, Couchbase, ClickHouse, Apache Druid, Trino, Apache Cassandra, Elasticsearch, OpenSearch, Redis, Prometheus, Apache Kafka, etcd, Neo4j, LibreDB. The count is the `SHIPPED` record in [`src/lib/db/compatibility.ts`](../src/lib/db/compatibility.ts), which is exhaustive over `DatabaseType`; `elasticsearch` and `opensearch` are two ids served by one provider module.
 
 It runs in two modes: as a **standalone Next.js app** and as an **embedded npm package** (`@libredb/studio`) consumed by libredb-platform. See [§4.6](#46-workspace-abstraction-npm-package-embedding).
 
@@ -43,6 +43,7 @@ graph TD
         DBFactory --> KeyValue[Key-Value Providers]
         DBFactory --> TimeSeries[Time-Series Providers]
         DBFactory --> Stream[Stream Providers]
+        DBFactory --> Graph[Graph Providers]
 
         SQL --> PG[(PostgreSQL)]
         SQL --> MySQL[(MySQL)]
@@ -63,6 +64,7 @@ graph TD
         KeyValue --> Etcd[(etcd)]
         TimeSeries --> Prometheus[(Prometheus)]
         Stream --> Kafka[(Apache Kafka)]
+        Graph --> Neo4j[(Neo4j)]
         DBFactory --> Embedded[Embedded Providers]
         Embedded --> LibreDB[(LibreDB)]
     end
@@ -108,6 +110,13 @@ classDiagram
         +cancelQuery()
     }
 
+    class GraphBaseProvider {
+        <<abstract>>
+        #profile GraphEngineProfile
+        +query()
+        +cancelQuery()
+    }
+
     BaseDatabaseProvider <|-- SQLBaseProvider
     BaseDatabaseProvider <|-- MongoDBProvider
     BaseDatabaseProvider <|-- CouchbaseProvider
@@ -115,6 +124,7 @@ classDiagram
     BaseDatabaseProvider <|-- PrometheusProvider
     BaseDatabaseProvider <|-- KafkaProvider
     BaseDatabaseProvider <|-- EtcdProvider
+    BaseDatabaseProvider <|-- GraphBaseProvider
     BaseDatabaseProvider <|-- LibreDBProvider
 
     SQLBaseProvider <|-- PostgresProvider
@@ -130,12 +140,18 @@ classDiagram
     SQLBaseProvider <|-- CassandraProvider
     SQLBaseProvider <|-- LibSQLProvider
     SQLBaseProvider <|-- DuckDBProvider
+
+    GraphBaseProvider <|-- Neo4jProvider
 ```
 
 Each provider implements:
 - **`getCapabilities()`** - queryLanguage, supportsExplain, supportsCreateTable, maintenanceOperations, etc.
 - **`getLabels()`** - entityName, selectAction, searchPlaceholder, etc. (drives all UI text)
 - **`prepareQuery()`** - handles query limiting per-provider (SQL LIMIT injection vs MongoDB native)
+
+A graph engine is the one family with a shared base of its own: `GraphBaseProvider` (`src/lib/db/graph/graph-base-provider.ts`) runs every statement through the shared Cypher read policy, the engine's statement gate (which an allowlisted SHOW form skips) and one READ session over the Bolt transport, and the engine supplies a `GraphEngineProfile` (its policy lists, catalog reads, gate and error table) plus its declarations and monitoring reads.
+The graph core under `src/lib/db/graph/` is pure and shipped to the browser, where the editor's Cypher language and completion read it; `bolt/` and the base class are server only.
+[`ADDING_A_PROVIDER.md`](./ADDING_A_PROVIDER.md#adding-a-graph-engine) describes the layers and the profile, and [`providers/neo4j.md`](./providers/neo4j.md) the one engine on them.
 
 Adding a new database type requires: **1 provider class** + **1 entry in `db-ui-config.ts`**.
 
@@ -158,6 +174,12 @@ A rule that only one engine's reads need stays in that engine's file, next to th
 PostgreSQL's `containerSchema()` is the example: it refuses a declaration that names no `schema` level, because the PostgreSQL reads look the schema up by id, so it lives beside those reads rather than in the kernel (#1092).
 A descriptor field that only one engine sets is a sign that its rule belongs in that engine.
 `ObjectPathShapeEngine.attachedSegment` (#978) is the one pre-existing exception: a per-engine acceptance policy carried in provider descriptors rather than in the declaration, and moving it into the declaration is separate work.
+
+The editor's query dialects follow the same rule through three registries, each a `Record` the compiler holds complete.
+`QUERY_DIALECTS` (`src/lib/db/query-dialects.ts`) gives each declared `queryDialect` its tab type and its three row-menu answers.
+`DIALECT_EDITORS` (`src/lib/editor/dialect-editors.ts`) gives each tab type its Monaco language and its formatter, keyed by tab type because that is what a restored tab carries.
+`DIALECT_GENERATORS` (`src/lib/query-generators.ts`) gives each dialect what a tree click and Generate Query write.
+A dialect is one record in each, and no reader branches on its name: `tests/unit/lib/dialect-reader-allowlist.test.ts` holds every other reader of `queryDialect`, of the JSON language and of a negated language to a closed list with its owner.
 
 ### 4.2. Authentication Flow
 
@@ -314,17 +336,23 @@ src/
     │   │   ├── keyvalue/    # redis, etcd/ (gRPC client seam + an etcdctl subset over etcd's gRPC API via @grpc/grpc-js)
     │   │   ├── timeseries/  # prometheus/ (transport seam + PromQL over the Prometheus HTTP API)
     │   │   ├── stream/      # kafka/ (read-client seam + JSON read requests over the Kafka protocol via @platformatic/kafka)
+    │   │   ├── graph/       # neo4j/ (an engine profile, catalog, statement gate and monitoring on the graph layer below)
     │   │   └── embedded/    # libredb (built-in embedded provider for the sample connection)
-    │   ├── http/            # endpoint.ts: the validated URL builder every HTTP transport uses (no redirects)
+    │   ├── graph/           # The graph layer a Cypher-over-Bolt engine extends (docs/ADDING_A_PROVIDER.md, "Adding a graph engine"):
+    │   │                    #   cypher/ (lexer, statements, quoting, read policy, generators), objects.ts, values.ts and
+    │   │                    #   profile.ts are pure and browser-safe; bolt/ (the GraphClient seam, the URI, the one
+    │   │                    #   neo4j-driver-lite client, driver values to JSON) and graph-base-provider.ts are server only
+    │   ├── http/            # endpoint.ts: the validated URL builder every HTTP transport uses (no redirects); node-transport.ts: the shared node:http(s) transport a new REST provider takes (one keep-alive Agent per connection, no proxy variables, a streamed byte cap)
     │   ├── factory.ts       # Provider factory
+    │   ├── query-dialects.ts # The dialect registry: each queryDialect's tab type and row-menu answers
     │   └── types.ts         # Database types
     ├── agent/               # Agent runtime: run ledger, workflow, tools, policy (docs/AGENT.md)
     ├── mcp/                 # MCP server: SDK handler, token, pre-processing, tools (docs/MCP.md)
     ├── passkey/             # Passkey sign-in (docs/PASSKEYS.md): config (PASSKEY_ORIGIN reader), policy, ceremony
     │                        #   cookie, WebAuthn wrapper, management and sign-in services, browser client
     ├── llm/                 # LLM provider module
-    ├── editor/              # Monaco completions (SQL + MongoDB), the tab-type/language ladder,
-    │                       # and the LibreDB, Redis and etcd command languages
+    ├── editor/              # Monaco completions (SQL + MongoDB), the tab-type/language ladder, the
+    │                       # editor registry (dialect-editors.ts), the LibreDB, Redis and etcd command languages, and Cypher
     ├── schema-diff/         # Diff engine + migration SQL generator
     ├── export/              # The writers behind every "save this to disk": RFC 4180 CSV,
     │                        #   the SQL INSERT/DDL forms, and the one blob-download path

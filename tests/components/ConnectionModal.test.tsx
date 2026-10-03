@@ -96,6 +96,7 @@ const mockSetType = mock(() => {});
 const mockSetName = mock(() => {});
 const mockSetQueryTimeout = mock(() => {});
 const mockSetHost = mock(() => {});
+const mockSettleHost = mock(() => {});
 const mockSetPort = mock(() => {});
 const mockSetUser = mock(() => {});
 const mockSetPassword = mock(() => {});
@@ -153,8 +154,10 @@ function getDefaultForm() {
     allowInsecureAuth: false,
     setAllowInsecureAuth: mockSetAllowInsecureAuth,
     readOnlyOffered: false,
+    credentialWarning: undefined as string | undefined,
     host: "localhost",
     setHost: mockSetHost,
+    settleHost: mockSettleHost,
     port: "5432",
     setPort: mockSetPort,
     user: "",
@@ -284,6 +287,7 @@ interface MockFieldCopy {
   readonly fieldHints?: Readonly<Record<string, string>>;
   readonly fieldOptions?: Readonly<Record<string, readonly { readonly value: string; readonly label: string }[]>>;
   readonly showSshTunnel?: false;
+  readonly readOnlyHint?: string;
 }
 
 /**
@@ -324,6 +328,12 @@ const MOCK_FIELD_COPY: Record<string, MockFieldCopy> = {
         "etcd receives the password, then a token on every call, so a password needs an SSL mode other than disable, with or without an SSH tunnel.",
     },
   },
+  // Mirrored from the real entry (Neo4j spec A7); tests/unit/lib/db-ui-config.test.ts pins the real one.
+  neo4j: {
+    fieldHints: { database: "Leave empty to use the server's home database." },
+    readOnlyHint:
+      "Neo4j connections are read-only in this version, whether or not this is ticked: this user's write privileges are never used.",
+  },
 };
 
 /** Copy one test declares on top of the mirrored table, reset before every test. */
@@ -349,6 +359,9 @@ mock.module("@/lib/db-ui-config", () => ({
   connectionFieldLabel: (config: MockFieldCopy, field: string, fallback: string) =>
     config.fieldLabels?.[field] ?? fallback,
   connectionFieldHint: (config: MockFieldCopy, field: string) => config.fieldHints?.[field],
+  readOnlyHint: (config: MockFieldCopy) =>
+    config.readOnlyHint ??
+    "Writes, value edits and maintenance are refused on this connection. You can turn this off here, so on your own connection it is a safety rail, not a permission.",
   getDBIcon: () => () => null,
   getDBColor: () => "text-hue-blue",
   // `isFileBased` must be mocked now that `DB_UI_CONFIG` is an exported binding (#425 made
@@ -458,6 +471,19 @@ describe("ConnectionModal", () => {
   test("draws no Read-only toggle where the form does not offer one", () => {
     const { queryByLabelText } = render(React.createElement(ConnectionModal, createDefaultProps()));
     expect(queryByLabelText("Read-only")).toBeNull();
+  });
+
+  // A Neo4j connection is read-only whether or not the box is ticked (spec A7), so the default sentence,
+  // which says the mode can be turned off, would be false there: the engine declares its own.
+  test("draws the engine's own Read-only sentence where its config declares one", () => {
+    mockFormOverrides = { readOnlyOffered: true, type: "neo4j" };
+    const { getByText, queryByText } = render(React.createElement(ConnectionModal, createDefaultProps()));
+    expect(
+      getByText(
+        "Neo4j connections are read-only in this version, whether or not this is ticked: this user's write privileges are never used.",
+      ).id,
+    ).toBe("readOnly-hint");
+    expect(queryByText(/You can turn this off here/)).toBeNull();
   });
 
   test("offers the Read-only toggle where the form does, says what it refuses, and forwards it", () => {
@@ -1639,5 +1665,52 @@ describe("ConnectionModal", () => {
       expect(queryByText(/turso db tokens create/)).not.toBeNull();
       expect(queryByText("Auth Token")).not.toBeNull();
     });
+  });
+});
+
+describe("ConnectionModal: the Host box address and the credential warning", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  beforeEach(() => {
+    mockFormOverrides = {};
+    mockDeclaredCopy = {};
+    mockSetHost.mockClear();
+    mockSettleHost.mockClear();
+  });
+
+  test("settles the Host box when the user leaves it, so a typed address is split before Test and Save", () => {
+    const { container } = render(React.createElement(ConnectionModal, createDefaultProps()));
+    const host = container.querySelector("#host") as HTMLInputElement;
+    fireEvent.input(host, { target: { value: "https://localhost" }, inputType: "insertText" });
+    expect(mockSettleHost).not.toHaveBeenCalled();
+    fireEvent.blur(host);
+    expect(mockSettleHost).toHaveBeenCalledTimes(1);
+  });
+
+  test("hands the Host box's text to the form with the input kind that delivered it", () => {
+    const { container } = render(React.createElement(ConnectionModal, createDefaultProps()));
+    const host = container.querySelector("#host") as HTMLInputElement;
+    fireEvent.input(host, { target: { value: "http://localhost:6333" }, inputType: "insertFromPaste" });
+    expect(mockSetHost).toHaveBeenLastCalledWith("http://localhost:6333", "insertFromPaste");
+  });
+
+  test("draws the form's credential warning beside the password, apart from the test result", () => {
+    mockFormOverrides = { credentialWarning: "Credential warning: synthetic sentence." };
+    const { container, getByTestId, queryByTestId } = render(
+      React.createElement(ConnectionModal, createDefaultProps()),
+    );
+    const warning = getByTestId("credential-warning");
+    expect(warning.textContent).toBe("Credential warning: synthetic sentence.");
+    // An `output` element: its implicit role is status, a polite live region, with no role attribute written.
+    expect(warning.tagName).toBe("OUTPUT");
+    expect(warning.parentElement).toBe((container.querySelector("#password") as HTMLElement).parentElement);
+    expect(queryByTestId("connection-test-result")).toBeNull();
+  });
+
+  test("draws no credential warning when the form has none", () => {
+    const { queryByTestId } = render(React.createElement(ConnectionModal, createDefaultProps()));
+    expect(queryByTestId("credential-warning")).toBeNull();
   });
 });
