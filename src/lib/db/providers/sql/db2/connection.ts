@@ -233,7 +233,8 @@ export const NODE_CA_FILE_SYSTEM: CaFileSystem = { mkdtemp, writeFile, rm };
 
 /**
  * The PEM written to `ca.pem` in a fresh private directory (mkdtemp creates it 0700), the file
- * itself 0600. A failed write removes the directory before the error goes on.
+ * itself 0600. On Windows the mode bits do not apply and the per-user ACL on the temp directory
+ * keeps it private. A failed write removes the directory before the error goes on.
  */
 export async function writeCaFile(
   pem: string,

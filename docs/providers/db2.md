@@ -104,6 +104,7 @@ Verification is the default once TLS is on; "Require" is a separate choice you m
 Verify full without a CA certificate checks the chain against the system trust store, and the host name as before.
 Verify CA without a CA certificate is refused: it checks no host name, so against the system trust store it would accept any publicly trusted certificate, issued for any name, and send it the password.
 The panel holds the CA as PEM text and `db2-node` wants a file path, so the provider writes the PEM to `ca.pem` in a fresh `libredb-db2-` directory under the system temp directory, mode 0600, on connect, and removes the directory on disconnect and on a failed connect.
+On Windows the mode bits do not apply, and the file is private through the per-user access control on the temp directory under the user profile.
 A client certificate or key is refused with "db2-node 1.0.22 has no client-certificate authentication; remove the client certificate and key from this Db2 connection.", never ignored.
 
 Measured: the connection negotiates TLS 1.3; a CA certificate with host-name validation, host-name validation `OFF` and `rejectUnauthorized: false` each connect; the system trust store alone answers `UnknownIssuer` for a server signed by a private CA; Verify full by an IP address the certificate does not name fails with "invalid peer certificate: certificate not valid for name", where Verify CA connects; and a plaintext connection to the TLS port is reset.
