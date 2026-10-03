@@ -68,10 +68,12 @@ A deployment without the driver answers `describeDriverAbsence()`'s message, "Db
 | SSL panel | Yes, unless you opt out | Section 3.3 |
 
 A pasted `db2://user:password@host:50000/TESTDB` fills the fields; there is no connection-string toggle, the Oracle precedent.
-`?ssl=true`, `?ssl=1` and `?security=SSL` (any case) turn TLS on in the pasted form, and `?ssl=false` or `?ssl=0` turn it off.
+`?ssl=true`, `?ssl=1` and `?security=SSL` (any case) turn TLS on in the pasted form as Verify (system trust), never as Require, and `?ssl=false` or `?ssl=0` turn it off.
 A stored connection string is re-parsed by the shared parser on every connect and must start with `db2://`, or the connect fails with "A Db2 connection string must start with db2://".
 Its parsed fields win over the form fields, as they do for PostgreSQL, and a TLS parameter the parser does not know, or one that contradicts the SSL panel, is an error rather than a setting dropped in silence.
-Behind an SSH tunnel the provider dials the tunnel's local end, never the host re-parsed from the string, and keeps the remote host name for certificate validation.
+Any query parameter other than `ssl` and `security` is refused, naming the parameter, and so is a string that carries both.
+Behind an SSH tunnel the provider dials the tunnel's local end, never the host re-parsed from the string.
+Because `db2-node` checks a certificate against the name it dials, which there is the tunnel's local address, Verify (system trust) and Verify full are refused through a tunnel; use Verify CA with the server's CA certificate.
 
 `db2-node` takes a structured options object, not a CLI keyword string, so a `;` in a field cannot inject a connection attribute and no guard for it exists.
 
@@ -102,7 +104,7 @@ Verify CA or Verify full without a CA certificate uses the system trust store wi
 The panel holds the CA as PEM text and `db2-node` wants a file path, so the provider writes the PEM to `ca.pem` in a fresh `libredb-db2-` directory under the system temp directory, mode 0600, on connect, and removes the directory on disconnect and on a failed connect.
 A client certificate or key is refused with "db2-node 1.0.22 has no client-certificate authentication; remove the client certificate and key from this Db2 connection.", never ignored.
 
-Measured: the connection negotiates TLS 1.3; a CA certificate with host-name validation, host-name validation `OFF` and `rejectUnauthorized: false` each connect; the system trust store alone answers `UnknownIssuer` for a server signed by a private CA; and a plaintext connection to the TLS port is reset.
+Measured: the connection negotiates TLS 1.3; a CA certificate with host-name validation, host-name validation `OFF` and `rejectUnauthorized: false` each connect; the system trust store alone answers `UnknownIssuer` for a server signed by a private CA; Verify full by an IP address the certificate does not name fails with "invalid peer certificate: certificate not valid for name", where Verify CA connects; and a plaintext connection to the TLS port is reset.
 
 #### Enabling TLS on the server
 
