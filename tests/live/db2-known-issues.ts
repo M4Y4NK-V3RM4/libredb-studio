@@ -295,7 +295,9 @@ const probes: Array<[string, (c: Client) => Promise<Verdict>]> = [
         c.query(`UPDATE ${SCHEMA}.K16 SET TS = ? WHERE ID = 1`, ["2026-01-01-00.00.00.000000000000"]),
       );
       if (!timestamp.ok) present.push("TIMESTAMP(12) refused");
-      const date = await attempt(() => c.query(`UPDATE ${SCHEMA}.K16 SET TS = ? WHERE ID = 1`, [new Date()]));
+      // The driver's types admit no Date; what it does with one that arrives anyway is the question.
+      const when = new Date() as unknown as string;
+      const date = await attempt(() => c.query(`UPDATE ${SCHEMA}.K16 SET TS = ? WHERE ID = 1`, [when]));
       if (!date.ok) present.push("Date refused");
       // Alone, a BOOLEAN bound as a string is accepted; beside another parameter it is not.
       const boolean = await attempt(() => c.query(`INSERT INTO ${SCHEMA}.K16 (ID, B) VALUES (?, ?)`, [2, "true"]));
