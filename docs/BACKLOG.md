@@ -32,7 +32,7 @@ None of it is a GitHub issue.
 - [Value interpolation](#value-interpolation) — V1
 - [Row editing](#row-editing) — R1–R3 · 3
 - [Studio UI and query execution](#studio-ui-and-query-execution) — X2-X19, U2-U72 · 59
-- [Dependencies](#dependencies) — P1-P7 · 7
+- [Dependencies](#dependencies) — P1-P8 · 8
 - [Documentation](#documentation) — DOC3-DOC9 · 6
 - [Release pipeline](#release-pipeline) — REL1-REL7 · 7
 - [Chart configuration surface](#chart-configuration-surface) — N1 · 1
@@ -3382,6 +3382,17 @@ That library is what protects a Db2 connection's password on the wire, since wit
 The crates are linked into the `.node` binary, so no lockfile, override or `cargo update` on our side reaches them: only a new `db2-node` release can.
 
 **Done when:** a `db2-node` release links `rustls` 0.23.45 or later and `rustls-webpki` 0.103.13 or later, its `Cargo.lock` is re-checked against the advisory database, `tests/live/db2-known-issues.ts` and `tests/live/db2-live-check.ts` are re-run on it, and the pin in `package.json` and section 12 of `docs/providers/db2.md` move to it.
+
+### P8. db2-node 1.0.24 fixes the known driver issues, and the Db2 provider still pins 1.0.22
+
+The Db2 provider (#786) shipped on `db2-node` 1.0.22 with the driver defects K1 to K22 documented in `docs/providers/db2.md` and reported upstream in gurungabit/db2-node#12.
+Upstream fixed all of them in gurungabit/db2-node#13, merged 2026-10-03.
+The v1.0.23 tag failed to publish, so the fixes reach npm with 1.0.24, whose release is gurungabit/db2-node#15; on 2026-10-03 npm still served 1.0.22 (`npm view db2-node dist-tags`).
+The fix changes behaviour the provider depends on: an unsafe BIGINT is returned as a string, `CALL` returns result sets, `currentSchema` is honoured, `Client.cancel()` exists, and a connection without TLS to a stock `AUTHENTICATION=SERVER` server is refused unless `securityMechanism: 'userPassword'` is set, so `allowInsecureAuth` stops working until the provider passes it.
+Bumping the pin is a provider change, not a routine bump.
+P7 closes with the same release if its `Cargo.lock` carries the patched TLS crates.
+
+**Done when:** the pin in `package.json` moves to the published release; `tests/live/db2-known-issues.ts` and `tests/live/db2-live-check.ts` are re-run against Db2 12.1 and 11.5 and each K row in `docs/providers/db2.md` is removed or kept on that evidence; `allowInsecureAuth` maps to the driver's explicit plaintext mechanism; inline edit, data import and Create Table are re-enabled only if K1 and K22 measure as gone; and each workaround the fix makes redundant (the compound block around `CALL`, HEX catalog names, the preview casts) is removed or its reason restated.
 
 ## Documentation
 
