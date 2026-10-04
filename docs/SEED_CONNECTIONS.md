@@ -340,7 +340,8 @@ Leave `database` out to read the user's home database; another database is anoth
 
 ## Credential Management
 
-Credentials are never stored in the config file directly. Use `${ENV_VAR}` syntax to reference environment variables:
+Keep the credentials of a config file you write by hand out of the file.
+Use `${ENV_VAR}` syntax to reference environment variables:
 
 ```yaml
 connections:
@@ -355,8 +356,29 @@ connections:
 2. `${VARIABLE_NAME}` patterns are resolved from `process.env`
 3. If an env var is undefined, that connection is **skipped** (others continue working)
 4. Plaintext passwords trigger a warning log (but still work)
+5. With `SEED_LITERAL_VALUES=true`, steps 2 to 4 do not happen: every value is used as written (see [Literal values written by a platform](#literal-values-written-by-a-platform))
 
 **Resolvable fields:** `password`, `connectionString`, `user`, `host`, `database`, `apiKeyId`, `apiKeySecret`, and the TLS material under `ssl`: `ssl.caCert`, `ssl.clientCert` and `ssl.clientKey`.
+
+### Literal values written by a platform
+
+`SEED_LITERAL_VALUES=true` makes every value of the seed file a literal.
+Studio then resolves no `${ENV_VAR}` and no `${vault:...}` reference in the file, neither when it lists connections nor when it opens one.
+A value that looks like a reference is used as written: `user: "${DB_USER}"` connects as a user literally named `${DB_USER}`, an unset variable skips no connection, and Vault is never asked for a seed value.
+The plaintext-password warning is not logged either, because every value in such a file is a literal on purpose.
+At the first load in literal mode, one `info` line says so: `Seed config read in literal mode (SEED_LITERAL_VALUES): no ${ENV} or ${vault:...} reference is resolved`.
+`true`, `1`, `on` and `yes` turn the mode on, trimmed and in any case.
+`false`, `0`, `off`, `no` and an empty value leave it off.
+Any other value leaves it off as well and logs one warning per process that names the value, so a typo shows in the log instead of passing silently.
+
+The mode exists for a seed file that a platform writes from data its users control, such as the database names, user names and passwords they choose when they create a database.
+Resolving a reference in such a file would hand Studio's own environment to whoever controls the field.
+A platform user who names a database user `${JWT_SECRET}` would have Studio send its session signing secret, as that user name, to a database the platform user runs, and read it back from that database's log.
+With the secret, that user could sign a Studio admin session.
+Literal mode removes the resolution itself, so no value a platform user controls can make Studio read its environment or its Vault, including a value the platform failed to filter out.
+
+Turn the mode on only for a file in which every value is meant literally: a file written by hand that relies on `${ENV_VAR}` or `${vault:...}` references stops resolving them.
+Keep such a file `managed: true`, the default, so its passwords stay on the server, and mount it read-only from a directory other users on the host cannot enter.
 
 ### Vault References
 
@@ -780,7 +802,7 @@ Credentials are a snapshot of the environment CapRover set: a password changed l
 The values are used as literal text.
 A discovered value that looks like a reference, `${NAME}` or `${vault:...}`, is sent to the database as written, and Studio never resolves it from its own environment or from Vault, neither when listing connections nor when one is opened.
 Any app on the CapRover network can carry these keys, and resolving a reference in them would hand Studio's own secrets to that app as a password.
-The marker that does this is set by the discovery source, not derived from the id, so a seed-file connection whose id starts with `caprover-` keeps the usual resolution.
+The marker that does this is set by the discovery source, not derived from the id, so a seed-file connection whose id starts with `caprover-` keeps the usual resolution, unless `SEED_LITERAL_VALUES` makes every seed-file value a literal too ([Literal values written by a platform](#literal-values-written-by-a-platform)).
 `GET /api/connections/managed` strips the marker, so its response shape is unchanged.
 
 ### Precedence
@@ -846,7 +868,7 @@ Pages that use the lighter connection list (the admin Overview and Operations ta
 
 | Scenario | Behavior |
 |----------|----------|
-| Config file not found | App runs normally, no seed connections. Warning logged. |
+| Config file not found | App runs normally, no seed connections. The warning is logged once for that path, and again only after the file has appeared and gone, so a short `SEED_CACHE_TTL_MS` does not repeat it on every re-read. |
 | Invalid YAML/JSON | Endpoint returns 500. Error logged with details. |
 | Invalid config (Zod validation fails) | Endpoint returns a generic 500. Validation errors are logged server-side, not returned in the response body. |
 | `mcp` that is not a boolean, or `mcp` in `defaults` | The whole file fails like any invalid config; every MCP tool answers that the connection configuration could not be read |
@@ -858,6 +880,8 @@ Pages that use the lighter connection list (the admin Overview and Operations ta
 | `${vault:...}` reference, Vault unreachable / path or key missing / token refused | The connection fails with an explicit error **when it is opened**. Listing connections is unaffected, and so is every other connection. |
 | `${vault:...}` reference with no `#key`, or a v1-shaped path | Fails with an error naming the expected KV v2 shape. The value is never treated as a literal. |
 | `${vault:...}` reference with `VAULT_ADDR` unset | Fails with a message naming the missing variable. |
+| A value written as `${ENV_VAR}` or `${vault:...}` while `SEED_LITERAL_VALUES=true` | Used as written: no variable is read, the connection is not skipped and Vault is not asked, so a value that is not the real credential fails like any wrong credential when the connection is opened. |
+| `SEED_LITERAL_VALUES` set to a value it does not recognize | References stay resolved, as with the mode off, and one warning per process names the value. |
 | User role doesn't match any connection | Empty list returned. Normal behavior. |
 | Seed connection not found at query time | 404 response. |
 | User doesn't have access to seed connection | 403 response. |
@@ -881,7 +905,9 @@ Pages that use the lighter connection list (the admin Overview and Operations ta
 - `managed: true` connections: credentials **never reach the client**. The API strips every field `src/lib/storage/connection-secrets.ts` classifies as secret, which on a seed means `password`, `connectionString`, the Elasticsearch `apiKeyId` and `apiKeySecret` pair, and `ssl.clientKey`. Certificates (`ssl.caCert`, `ssl.clientCert`) are public and still reach it. Server resolves credentials at query execution time.
 - That covers what the API returns, not what an engine answers a statement with. A managed Redis seed that authenticates with `requirepass` answers `CONFIG GET requirepass` with the password, so give a managed seed a least-privilege credential, for Redis an ACL user without `+config`.
 - Config file should be mounted **read-only** (`:ro` in Docker, `readOnly: true` in Kubernetes).
-- Use `${ENV_VAR}` for all secrets. Plaintext passwords trigger a warning log.
+- Use `${ENV_VAR}` for the secrets of a file you write by hand.
+  Plaintext passwords trigger a warning log.
+- Read a file that a platform writes from data its users control with `SEED_LITERAL_VALUES=true`, so that no value in it is resolved from Studio's environment or from Vault ([Literal values written by a platform](#literal-values-written-by-a-platform)).
 
 ### Role Enforcement
 
@@ -906,6 +932,7 @@ This is the standard application logger (`src/lib/logger.ts`), not a persisted a
 |----------|---------|-------------|
 | `SEED_CONFIG_PATH` | `/app/config/seed-connections.yaml` | Path to config file |
 | `SEED_CACHE_TTL_MS` | `60000` | Cache TTL in milliseconds |
+| `SEED_LITERAL_VALUES` | unset | `true`, `1`, `on` or `yes` (trimmed, any case) reads every seed value as written: no `${ENV_VAR}` or `${vault:...}` reference is resolved and the plaintext-password warning is not logged. `false`, `0`, `off`, `no` or empty keep references resolved, and so does any other value, with one warning ([Literal values written by a platform](#literal-values-written-by-a-platform)) |
 | `SEED_DISCOVERY_PATH` | unset (off) | Path of the discovery export file inside the Studio container; see [Platform discovery (CapRover)](#platform-discovery-caprover) |
 | `SEED_DISCOVERY_MAX_AGE_MS` | `60000` | Age of the export's `generatedAt` after which discovered connections are withdrawn; keep it well above the exporter's `DISCOVERY_INTERVAL_MS` (10000 by default) |
 | `NEXT_PUBLIC_MANAGED_REFRESH_FLOOR_MS` | `5000` | Shortest interval of an open tab's managed-list refresh, inlined at build time, so it only affects source builds and tests, not packaged artifacts |
@@ -1043,7 +1070,7 @@ seed-connections.yaml (volume mount)
         │
   ┌─────▼────────────────────────────┐
   │ resolveConnection() (all routes) │  seed: prefix → server-side credential resolution
-  └─────┬────────────────────────────┘  a literal (discovered) connection skips Vault
+  └─────┬────────────────────────────┘  a literal connection (discovered, or a file seed with SEED_LITERAL_VALUES on) skips Vault
         │
   ┌─────▼────────────────────┐
   │ VaultClient (lazy)       │  ${vault:...} → KV v2 read + per-path TTL cache
