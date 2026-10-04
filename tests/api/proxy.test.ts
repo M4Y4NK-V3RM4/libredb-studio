@@ -132,6 +132,20 @@ describe("proxy", () => {
 
       expect(isRedirect(res)).toBe(false);
     });
+
+    test("a signed-in visitor goes to the page next names, as the sign-in form would", async () => {
+      const token = await createToken("user");
+      const res = await proxy(createNextRequest("/login?next=%2F%3Fconnection%3Dseed%253Aorders", token));
+
+      expect(getRedirectLocation(res)).toBe("http://localhost:3000/?connection=seed%3Aorders");
+    });
+
+    test("a next that would leave this application is ignored for the role's landing page", async () => {
+      const token = await createToken("admin");
+      const res = await proxy(createNextRequest("/login?next=%2F%2Fevil.example", token));
+
+      expect(getRedirectLocation(res)).toBe("http://localhost:3000/admin");
+    });
   });
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -161,6 +175,24 @@ describe("proxy", () => {
 
       expect(isRedirect(res)).toBe(true);
       expect(getRedirectLocation(res)).toContain("/login");
+    });
+
+    test("a signed-out deep link goes to sign in with its address in next", async () => {
+      const res = await proxy(createNextRequest("/?connection=seed%3Aorders"));
+
+      expect(getRedirectLocation(res)).toBe("http://localhost:3000/login?next=%2F%3Fconnection%3Dseed%253Aorders");
+    });
+
+    test("next carries the page's whole query, also when the session has expired", async () => {
+      const res = await proxy(createNextRequest("/admin?tab=audit&page=2", "expired-or-invalid-token"));
+
+      expect(getRedirectLocation(res)).toBe("http://localhost:3000/login?next=%2Fadmin%3Ftab%3Daudit%26page%3D2");
+    });
+
+    test("the bare root goes to sign in without next", async () => {
+      const res = await proxy(createNextRequest("/"));
+
+      expect(getRedirectLocation(res)).toBe("http://localhost:3000/login");
     });
   });
 
@@ -400,7 +432,7 @@ describe("proxy", () => {
 
 describe("proxy under a nested basePath", () => {
   for (const [path, role, destination] of [
-    ["/admin", undefined, "/login"],
+    ["/admin", undefined, "/login?next=%2Fadmin"],
     ["/login", "admin", "/admin"],
     ["/login", "user", "/"],
     ["/admin", "user", "/"],
@@ -418,6 +450,26 @@ describe("proxy under a nested basePath", () => {
       });
     });
   }
+  test("a deep link opened signed out comes back to the same address inside the mount", async () => {
+    await withBasePathEnv("/~/libredb", async () => {
+      const options = { nextConfig: { basePath: "/~/libredb" } };
+      const signedOut = await proxy(
+        new NextRequest("http://localhost:3000/~/libredb/?connection=seed%3Aorders", options),
+      );
+      expect(signedOut.headers.get("location")).toBe(
+        "http://localhost:3000/~/libredb/login?next=%2F%3Fconnection%3Dseed%253Aorders",
+      );
+
+      const token = await createToken("user");
+      const signedIn = await proxy(
+        new NextRequest("http://localhost:3000/~/libredb/login?next=%2F%3Fconnection%3Dseed%253Aorders", {
+          ...options,
+          headers: { cookie: `auth-token=${token}` },
+        }),
+      );
+      expect(signedIn.headers.get("location")).toBe("http://localhost:3000/~/libredb/?connection=seed%3Aorders");
+    });
+  });
   test("a prefixed API path answers 401 JSON inside the mount, not a redirect", async () => {
     await withBasePathEnv("/~/libredb", async () => {
       const request = new NextRequest("http://localhost:3000/~/libredb/api/db/query", {

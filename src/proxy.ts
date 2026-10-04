@@ -12,7 +12,7 @@ import { MCP_PATH } from "@/lib/mcp/config";
 import { mcpOriginHostRefusal } from "@/lib/mcp/origin-policy";
 import { getJwtSecret } from "@/lib/config/auth-env";
 import { withSecurityHeaders } from "@/lib/security/config";
-import { sessionRequiredBody } from "@/lib/api/session-ended";
+import { RETURN_PATH_PARAM, safeReturnPath, sessionRequiredBody, signInPath } from "@/lib/api/session-ended";
 
 // Lazy-initialized to prevent module-level crash if JWT_SECRET is misconfigured.
 // A module-level throw would block ALL requests (including health check).
@@ -99,10 +99,11 @@ export async function proxy(request: NextRequest) {
       try {
         const { payload } = await jwtVerify(token, jwtSecret());
         const role = payload.role as string;
-        // Redirect authenticated users based on their role
-        return withSecurityHeaders(
-          NextResponse.redirect(new URL(withBasePath(role === "admin" ? "/admin" : "/"), request.url)),
-        );
+        // Redirect authenticated users to the page the sign-in link names (`next`, judged as the
+        // sign-in form judges it), else to their role's landing page
+        const returnPath = safeReturnPath(request.nextUrl.searchParams.get(RETURN_PATH_PARAM));
+        const landing = returnPath ?? (role === "admin" ? "/admin" : "/");
+        return withSecurityHeaders(NextResponse.redirect(new URL(withBasePath(landing), request.url)));
       } catch {
         // Invalid token, allow access to login page
         logger.debug("Invalid token on login page, allowing access", { route: "proxy" });
@@ -194,12 +195,19 @@ export async function proxy(request: NextRequest) {
  * caller is a fetch, not a tab: it followed the redirect to /login, received the sign-in page's
  * HTML, and every client caller then failed to parse it ("Unexpected token '<'") with nothing
  * sending the user to sign in. The JSON carries the AUTH_REQUIRED code the browser keys on.
+ *
+ * A page keeps its address as the sign-in page's `next`, so a link such as `/?connection=<id>`
+ * opens what it named once the user has signed in. It is app-relative, because `nextUrl` has
+ * already removed the base path and withBasePath adds it once here. The bare root carries none,
+ * and sign-in then lands on the role's own page as before.
  */
 function signInRequired(request: NextRequest, pathname: string, error: string): NextResponse {
   if (pathname === "/api" || pathname.startsWith("/api/")) {
     return NextResponse.json(sessionRequiredBody(error), { status: 401 });
   }
-  return NextResponse.redirect(new URL(withBasePath("/login"), request.url));
+  const { search } = request.nextUrl;
+  const target = pathname === "/" && search === "" ? "/login" : signInPath(`${pathname}${search}`);
+  return NextResponse.redirect(new URL(withBasePath(target), request.url));
 }
 
 /**

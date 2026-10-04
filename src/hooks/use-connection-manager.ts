@@ -1,6 +1,6 @@
 "use client";
 
-import { appFetch } from "@/lib/config/base-path";
+import { appFetch, SESSION_REQUIRED_CODE } from "@/lib/config/base-path";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { DatabaseConnection } from "@/lib/types";
 import { detailedObjects, schemaContextOf, type DetailedObject } from "@/lib/db/detailed-object";
@@ -44,6 +44,39 @@ export const MANAGED_REFRESH_MAX_MS = 60000;
 export function managedRefreshIntervalMs(cacheHint: number | null): number {
   const floor = Number(process.env.NEXT_PUBLIC_MANAGED_REFRESH_FLOOR_MS) || MANAGED_REFRESH_DEFAULT_FLOOR_MS;
   return Math.min(Math.max(cacheHint ?? 0, floor), MANAGED_REFRESH_MAX_MS);
+}
+
+/**
+ * The query parameter a link uses to open the editor on one connection, by the connection's full id
+ * in this browser: `seed:<id>` for a seed, as `GET /api/connections/managed` lists it.
+ */
+const CONNECTION_LINK_PARAM = "connection";
+
+/**
+ * The connection id the address asks the editor to open, or null when it names none. The parameter
+ * leaves the address bar as it is read, whether or not it names a connection this reader can open:
+ * it is an instruction for this load, and kept there a reload would follow it again and a copied
+ * address would pass it on.
+ *
+ * Read from `window.location`, not through `useSearchParams` or the page's `searchParams` prop. The
+ * editor's page is prerendered: a client component that calls `useSearchParams` there fails
+ * `next build` without a Suspense boundary above it, which would put a fallback in place of the
+ * prerendered editor, and the `searchParams` prop would render the page per request instead. The
+ * link is wanted once, after the list has loaded, and only the effect that loads the list knows
+ * that moment.
+ *
+ * Removed with `history.replaceState` and a null state. Next's router patches `replaceState` so it
+ * follows a change made this way, but it passes through untouched any call whose state already
+ * carries its own `__NA` marker. `window.history.state` carries it, so handing that back would leave
+ * the router holding the old address, which it writes back into the address bar on its next update.
+ */
+function takeLinkedConnectionId(): string | null {
+  const url = new URL(window.location.href);
+  const linked = url.searchParams.get(CONNECTION_LINK_PARAM);
+  if (linked === null) return null;
+  url.searchParams.delete(CONNECTION_LINK_PARAM);
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  return linked;
 }
 
 export function useConnectionManager(storageReady = false) {
@@ -372,6 +405,7 @@ export function useConnectionManager(storageReady = false) {
       pendingSeeds: string[];
       failed: boolean;
       cacheHint: number | null;
+      sessionEnded: boolean;
     }> => {
       const managedRes = await appFetch("/api/connections/managed");
       // A non-OK response is a transient failure, NOT "nothing pending" — the
@@ -386,11 +420,14 @@ export function useConnectionManager(storageReady = false) {
         // platform embed — is not evidence about that configuration and says nothing.
         // A quiet read (the refresh below) records nothing on failure: only the initial load and the
         // pending-seed poll may mark the served seeds unread, so a refresh that fails changes nothing at all.
-        const body = (await managedRes.json().catch(() => ({}))) as { reason?: string };
+        const body = (await managedRes.json().catch(() => ({}))) as { reason?: string; code?: string };
         if (!quiet && !cancelled && body.reason === SEED_CONFIG_UNREADABLE_REASON) {
           setServedSeeds({ loaded: false });
         }
-        return { merged: null, pendingSeeds: [], failed: true, cacheHint: null };
+        // The session-required answer, which appFetch has already handed to the page's session-ended
+        // handler: the first load then leaves a `?connection=` link for the page sign-in returns to.
+        const sessionEnded = managedRes.status === 401 && body.code === SESSION_REQUIRED_CODE;
+        return { merged: null, pendingSeeds: [], failed: true, cacheHint: null, sessionEnded };
       }
       const {
         connections: managedConns,
@@ -409,6 +446,7 @@ export function useConnectionManager(storageReady = false) {
         // The server's seed cache lifetime in ms (SEED_CACHE_TTL_MS); the refresh interval follows it,
         // between the floor and the one-minute cap (managedRefreshIntervalMs).
         cacheHint: typeof cacheHint === "number" && Number.isFinite(cacheHint) ? cacheHint : null,
+        sessionEnded: false,
       };
     };
 
@@ -468,6 +506,37 @@ export function useConnectionManager(storageReady = false) {
     let refreshInFlight = false;
 
     /*
+      A `?connection=` link the first load could not open (selectInitialConnection below). The
+      server re-reads its seed file only once its seed cache has expired, so a link for a database
+      created moments ago can arrive before that database is listed: a refresh that lists it opens
+      it, whenever it runs. A miss counts only one seed-cache lifetime (the first load's cacheHint,
+      recorded in initializeConnections) after the first load answered, because a refresh on focus
+      or visibilitychange runs at once and the server answers it from the cache that load read.
+      Only the first miss after that tells the user.
+    */
+    let pendingLinkId: string | null = null;
+    let firstLoadAnsweredAt = 0;
+    let firstLoadCacheHint: number | null = null;
+
+    const settlePendingLink = (next: DatabaseConnection[]) => {
+      if (pendingLinkId === null) return;
+      const linkedId = pendingLinkId;
+      const linked = connectionsUnderPolicy(next, currentPolicy).find((c) => c.id === linkedId);
+      if (linked !== undefined) {
+        pendingLinkId = null;
+        setActiveConnection(linked);
+        return;
+      }
+      if (Date.now() < firstLoadAnsweredAt + (firstLoadCacheHint ?? 0)) return;
+      pendingLinkId = null;
+      toast({
+        title: "Connection not available",
+        description: "The link names a connection that is not available to you, so it was not opened.",
+        variant: "destructive",
+      });
+    };
+
+    /*
       The active connection keeps its object identity while its id is still listed, and the
       refreshed list carries that same object in place of its fresh copy: every way of picking a
       connection (sidebar, mobile list and header, command palette) hands the list's object to
@@ -507,7 +576,9 @@ export function useConnectionManager(storageReady = false) {
           if (cancelled || failed) return;
           // An empty list is an answer too: the server withdrew every managed entry, and
           // fetchManaged maps it to `merged: null`, so what remains is the user's own list.
-          applyManagedRefresh(merged ?? storage.getConnections());
+          const next = merged ?? storage.getConnections();
+          applyManagedRefresh(next);
+          settlePendingLink(next);
         })
         .catch((err) => {
           logger.debug("Managed connection refresh failed", {
@@ -533,6 +604,50 @@ export function useConnectionManager(storageReady = false) {
       document.removeEventListener("visibilitychange", refreshManaged);
     };
 
+    /**
+     * The first selection of this load, made from the connections the reader will see, the
+     * policy's view of `list`: the connection a link names, else the one the reader had open last
+     * time, else the first of them.
+     *
+     * A link naming nothing in that view keeps the default. When the managed list answered, the
+     * refreshes decide (settlePendingLink above), because the seed may not be listed yet. When
+     * it did not answer, the reader is told that the list could not be loaded, never that the
+     * connection is unavailable, which nothing here knows. When the session has ended, the link
+     * stays where it is: the session-ended handler has already sent the tab to sign in with this
+     * address, link included, as the page to come back to.
+     *
+     * A miss reads the same whatever its cause: an id that does not exist, a seed the server did
+     * not list for this reader's role, and a connection of the user's own that the
+     * custom-connections policy hides. The first two read the same on purpose, because telling
+     * them apart would tell a reader which seed ids exist for other roles; the third is a
+     * connection the server would refuse to open, so it is not one the link may open either.
+     */
+    const selectInitialConnection = (
+      list: DatabaseConnection[],
+      { answered, sessionEnded }: { answered: boolean; sessionEnded: boolean },
+    ) => {
+      const selectable = connectionsUnderPolicy(list, currentPolicy);
+      const linkedId = sessionEnded ? null : takeLinkedConnectionId();
+      const linked = linkedId === null ? undefined : selectable.find((c) => c.id === linkedId);
+      if (linked !== undefined) {
+        setActiveConnection(linked);
+        return;
+      }
+      if (linkedId !== null && answered) pendingLinkId = linkedId;
+      if (linkedId !== null && !answered) {
+        toast({
+          title: "Connections not loaded",
+          description:
+            "The link names a connection, but the connection list could not be loaded, so it was not opened. Reload the page to try again.",
+          variant: "destructive",
+        });
+      }
+      if (selectable.length === 0) return;
+      const savedId = storage.getActiveConnectionId();
+      const saved = savedId ? selectable.find((c: DatabaseConnection) => c.id === savedId) : null;
+      setActiveConnection(saved ?? selectable[0]);
+    };
+
     const initializeConnections = async () => {
       const loadedConnections = storage.getConnections();
       // Read before anything is selected, so the first active connection is one the server opens.
@@ -547,21 +662,19 @@ export function useConnectionManager(storageReady = false) {
       // more useless request.
       let managedAnswered = false;
       let managedCacheHint: number | null = null;
+      let managedSessionEnded = false;
       try {
-        const { merged, pendingSeeds, failed, cacheHint } = await fetchManaged();
+        const { merged, pendingSeeds, failed, cacheHint, sessionEnded } = await fetchManaged();
         if (cancelled) return;
         managedAnswered = !failed;
         managedCacheHint = cacheHint;
+        managedSessionEnded = sessionEnded;
+        firstLoadAnsweredAt = Date.now();
+        firstLoadCacheHint = cacheHint;
         if (merged) {
           setConnections(merged);
           managedMerged = true;
-
-          const selectable = connectionsUnderPolicy(merged, currentPolicy);
-          if (selectable.length > 0) {
-            const savedId = storage.getActiveConnectionId();
-            const saved = savedId ? selectable.find((c: DatabaseConnection) => c.id === savedId) : null;
-            setActiveConnection(saved ?? selectable[0]);
-          }
+          selectInitialConnection(merged, { answered: true, sessionEnded: false });
         }
         startSeedPoll(pendingSeeds);
       } catch {
@@ -576,14 +689,12 @@ export function useConnectionManager(storageReady = false) {
         // observed.
       }
 
+      // A load whose managed request threw after it was unmounted selects nothing and says nothing,
+      // so a link stays in the address bar for the mount that replaces this one.
+      if (cancelled) return;
       if (!managedMerged) {
         setConnections(loadedConnections);
-        const selectable = connectionsUnderPolicy(loadedConnections, currentPolicy);
-        if (selectable.length > 0) {
-          const savedId = storage.getActiveConnectionId();
-          const saved = savedId ? selectable.find((c: DatabaseConnection) => c.id === savedId) : null;
-          setActiveConnection(saved ?? selectable[0]);
-        }
+        selectInitialConnection(loadedConnections, { answered: managedAnswered, sessionEnded: managedSessionEnded });
       }
 
       if (managedAnswered) startManagedRefresh(managedCacheHint);
