@@ -13,6 +13,7 @@ import {
   useConnectionManager,
 } from "@/hooks/use-connection-manager";
 import { SEED_CONFIG_UNREADABLE_REASON, type ManagedConnectionPayload } from "@/hooks/use-connection-payload";
+import { useTabManager } from "@/hooks/use-tab-manager";
 import { logger } from "@/lib/logger";
 import { storage } from "@/lib/storage";
 import type { DatabaseConnection } from "@/lib/types";
@@ -1152,7 +1153,7 @@ describe("useConnectionManager", () => {
       warnSpy.mockRestore();
     }
   });
-  // ── Managed refresh interval (CapRover auto-connect spec, section 11) ─────
+  // ── Managed refresh interval (#1502) ──────────────────────────────────────
 
   describe("managed refresh interval", () => {
     afterEach(() => {
@@ -1188,7 +1189,7 @@ describe("useConnectionManager", () => {
       expect(managedRefreshIntervalMs(null)).toBe(5000);
     });
   });
-  // ── Managed connection refresh (CapRover auto-connect spec, section 11) ──
+  // ── Managed connection refresh (#1502) ────────────────────────────────────
 
   const firstManaged = () =>
     makeManagedConnection({ id: "managed-1", managed: true, seedId: "seed-1", name: "First DB" });
@@ -1843,6 +1844,93 @@ describe("useConnectionManager", () => {
       });
       expect(result.current.connections.map((c) => c.id)).toEqual(["seed:sandbox"]);
       expect(mockToastSuccess).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("managed connection refresh and the open editor", () => {
+    afterEach(() => {
+      delete process.env.NEXT_PUBLIC_MANAGED_REFRESH_FLOOR_MS;
+    });
+
+    // Studio's connection-change effect resets the transaction, discards pending edits and reads
+    // the schema again whenever the active connection's object changes (src/components/Studio.tsx),
+    // and the tab manager reloads its tabs whenever that connection's id changes
+    // (src/hooks/use-tab-manager.ts), so a refresh that changes nothing, or fails, has to hand back
+    // the same active object.
+    test("a refresh that changes nothing, or fails, leaves the open connection, its tabs and the user's own connections as they were, and says nothing", async () => {
+      process.env.NEXT_PUBLIC_MANAGED_REFRESH_FLOOR_MS = "60000";
+      const debugSpy = spyOn(logger, "debug").mockImplementation(() => {});
+      storage.saveConnection(makeConnection({ id: "plain-1", name: "Plain" }));
+      // The route stamps createdAt afresh on every request, so an unchanged list still differs there.
+      const unchanged = { ...firstManaged(), createdAt: "2026-01-02T00:00:05.000Z" };
+      let managedCalls = 0;
+      const fetchMock = mockGlobalFetch({
+        "/api/connections/managed": () => {
+          managedCalls += 1;
+          if (managedCalls === 1) return { ok: true, json: { connections: [firstManaged()] } };
+          if (managedCalls === 2) return { ok: true, json: { connections: [unchanged] } };
+          if (managedCalls === 3) return { status: 503, json: { error: "warming up" } };
+          if (managedCalls === 4) {
+            return {
+              status: 500,
+              json: { error: "Failed to load managed connections", reason: SEED_CONFIG_UNREADABLE_REASON },
+            };
+          }
+          throw new Error("network down");
+        },
+        "/api/db/health": healthy,
+      });
+
+      try {
+        const { result } = renderHook(() => {
+          const conn = useConnectionManager(true);
+          const tabs = useTabManager({
+            activeConnection: conn.activeConnection,
+            metadata: null,
+            schema: conn.schema,
+            persistWorkspace: true,
+          });
+          return { conn, tabs };
+        });
+        await waitFor(() => {
+          expect(result.current.conn.activeConnection?.id).toBe("managed-1");
+        });
+        act(() => result.current.tabs.addTab());
+        act(() => result.current.tabs.updateCurrentTab({ query: "SELECT 1" }));
+        const { tabs, activeTabId } = result.current.tabs;
+        const active = result.current.conn.activeConnection;
+        const stored = storage.getConnections();
+        expect(tabs).toHaveLength(2);
+
+        const refreshAndSettle = async (calls: number) => {
+          focusWindow();
+          await waitFor(() => {
+            expect(managedCallCount(fetchMock)).toBe(calls);
+          });
+          await sleep(50);
+        };
+        // One unchanged answer, then three failures in a row: a non-OK answer, one the server
+        // blames on its seed configuration, and a request that fails outright.
+        await refreshAndSettle(2);
+        await refreshAndSettle(3);
+        await refreshAndSettle(4);
+        await refreshAndSettle(5);
+
+        expect(result.current.conn.activeConnection).toBe(active);
+        // The list hands the same object to whatever picks the connection again.
+        expect(active).toBe(result.current.conn.connections[0]);
+        expect(result.current.conn.connections.map((c) => c.id)).toEqual(["managed-1", "plain-1"]);
+        expect(result.current.conn.servedSeeds).toEqual({ loaded: true, seeds: [unchanged] });
+        expect(storage.getConnections()).toEqual(stored);
+        expect(storage.getActiveConnectionId()).toBe("managed-1");
+        expect(result.current.tabs.tabs).toBe(tabs);
+        expect(result.current.tabs.activeTabId).toBe(activeTabId);
+        expect(result.current.tabs.currentTab.query).toBe("SELECT 1");
+        expect(mockToastSuccess).not.toHaveBeenCalled();
+        expect(mockToastError).not.toHaveBeenCalled();
+      } finally {
+        debugSpy.mockRestore();
+      }
     });
   });
 });

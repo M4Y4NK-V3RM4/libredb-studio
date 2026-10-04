@@ -620,6 +620,8 @@ The same TTL governs the [Platform discovery (CapRover)](#platform-discovery-cap
 An open tab refetches the managed list every `max(SEED_CACHE_TTL_MS, 5000)` milliseconds, at most 60 seconds, while it is visible, and on focus, so a change to the seed file or to the export reaches it without a reload.
 With the default of 60000 an open tab refreshes once a minute; the auto-connect template sets 5000, so its tabs refresh every 5 seconds.
 A change to the seed file therefore reaches an open tab after at most `SEED_CACHE_TTL_MS` plus one refresh interval, about two minutes with the defaults; with a TTL above 60000 the tab still asks every 60 seconds, and the server answers most of those reads from its cache.
+A refresh merges the answer exactly as a page load does: a `managed: false` seed keeps the editable copy the browser already holds, an unmanaged seed the user deleted stays deleted, and an answer that lists no connections withdraws every managed one; [In an open tab](#in-an-open-tab) says which connection stays open.
+A refresh that fails changes nothing and shows nothing, and the next one tries again; the one exception is a session that has ended, which the server answers with `401` and the code `AUTH_REQUIRED`, and which sends the tab to the sign-in page, as any other request of the editor does.
 
 ---
 

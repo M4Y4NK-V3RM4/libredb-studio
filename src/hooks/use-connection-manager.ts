@@ -31,7 +31,7 @@ import {
 const MANAGED_POLL_MAX_ATTEMPTS = 30;
 
 /**
- * Managed-list refresh after the first load (CapRover auto-connect spec, section 11): the interval
+ * Managed-list refresh after the first load (#1502): the interval
  * never runs more often than the floor and never less often than the cap, while focus and visibility
  * refresh at once, bounded only by the refresh's in-flight guard. NEXT_PUBLIC_MANAGED_REFRESH_FLOOR_MS
  * moves the floor in source builds and tests only, because NEXT_PUBLIC_ values are inlined at
@@ -454,7 +454,7 @@ export function useConnectionManager(storageReady = false) {
     };
 
     /*
-      The managed list after the first load (CapRover auto-connect spec, section 11).
+      The managed list after the first load (#1502).
 
       A discovered database is added or removed on the server while a tab is open, so the
       list is read again: every max(cacheHint, floor) ms capped at a minute, only while the
