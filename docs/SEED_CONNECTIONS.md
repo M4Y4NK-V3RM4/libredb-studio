@@ -201,6 +201,21 @@ connections:
     # No `database`: one connection is one cluster, so there is nothing to select.
     # No `connectionString` and no `sshTunnel`: a Kafka client reaches every broker at
     # the address the broker advertises, which a tunnel to one address does not carry.
+
+  - id: "edge-libsql"
+    name: "Edge libSQL"
+    type: libsql
+    host: "${LIBSQL_HOST}"
+    port: 8080                # sqld's HTTP port
+    user: "${LIBSQL_USER}"
+    password: "${LIBSQL_PASSWORD}"
+    roles: ["*"]
+    environment: production
+    # A `user` sends `user` and `password` as HTTP Basic, the pair a self-hosted sqld
+    # started with SQLD_HTTP_AUTH="basic:<base64(user:password)>" checks. Leave `user`
+    # out to send `password` as a bearer token, which Turso Cloud and a sqld checking
+    # JWTs read. No `database`: the database is the host. No `connectionString`: a
+    # libsql:// URL means TLS and a token, and a `user` beside it is ignored.
 ```
 
 ### Field Reference
