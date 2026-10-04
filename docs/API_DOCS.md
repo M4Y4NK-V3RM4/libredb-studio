@@ -2063,6 +2063,7 @@ interface QueryResult {
   rowCount: number;        // Number of rows returned
   executionTime: number;   // Execution time in ms
   explainPlan?: any;       // Query execution plan (if requested)
+  rolledBack?: boolean;    // Set by the client when SANDBOX ran the statement and the server confirmed the rollback; never sent by a route
   pagination?: QueryPagination;          // Auto-limiting the route attaches to every response
   warnings?: QueryWarning[];             // Notices the engine attached; ABSENT when it reported none
   columnTypes?: Record<string, string>;  // Declared type per column, keyed by its name in `fields`
