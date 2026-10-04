@@ -525,7 +525,15 @@ describe("POST /api/db/query", () => {
   });
 
   // The probe adds one to the limit, so a limit that is not a number would be concatenated, not added.
-  for (const options of [{ limit: "500" }, { limit: -1 }, { limit: 1.5 }, { offset: "0" }, { offset: -5 }, null]) {
+  for (const options of [
+    { limit: "500" },
+    { limit: 0 },
+    { limit: -1 },
+    { limit: 1.5 },
+    { offset: "0" },
+    { offset: -5 },
+    null,
+  ]) {
     test(`refuses options ${JSON.stringify(options)} before any provider is reached`, async () => {
       const req = createMockRequest("/api/db/query", {
         method: "POST",

@@ -429,7 +429,7 @@ A value the etcd provider's cell bound cut sets no `wasLimited`: its encoding ga
 A shorter result under an injected cap has `wasLimited: false`.
 Under that cap, a result of exactly `limit` rows has `wasLimited: false` and `hasMore: false`: the statement that runs asks for `limit + 1` rows, the extra row is never answered, and only its arrival makes `hasMore` and `wasLimited` true (#1440).
 `POST /api/db/transaction` answers a query inside a transaction by the same rule. Because the statement that runs asks for one row more, a `SELECT ... FOR UPDATE` without its own `LIMIT` in a held transaction now locks `limit + 1` rows.
-`options.limit` and `options.offset` must be non-negative integers when sent; anything else is answered `400` before a provider is reached.
+`options.limit` must be an integer of at least 1 and `options.offset` a non-negative integer when sent; anything else is answered `400` before a provider is reached.
 
 `hasMore` is `wasLimited && rows.length > limit` over the probed statement, with `wasLimited` read from the server's own limiter alone, and both halves matter.
 A bound the provider reported sets `wasLimited` and never `hasMore`, because no `offset` can advance a bound the server did not write.

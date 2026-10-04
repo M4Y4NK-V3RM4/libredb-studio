@@ -634,7 +634,7 @@ ordering notice beside it cannot disagree:
 | Condition | Where it comes from | Why |
 |-----------|--------------------|-----|
 | `supportsResultPagination === true` | the connection's `ProviderCapabilities` | Thirteen providers cannot serve page two. Cassandra and Elasticsearch throw on a positive offset; MongoDB, Redis, LibreDB, Prometheus, InfluxDB (InfluxQL), Kafka, etcd, Neo4j, Milvus, Qdrant and Oxia answer it with page one. An absent flag reads as unsupported |
-| `pagination.hasMore` | `POST /api/db/query` | Requires the limiter's `PreparedQuery.wasLimited` as well as a row past the page — see below |
+| `pagination.hasMore` | `POST /api/db/query` | Requires the limiter's `PreparedQuery.wasLimited` as well as a row past the page, see below |
 | the surface supplies `onLoadMore` | `BottomPanel` | A result hydrated from an agent run has no statement of its own to page |
 
 ### User Flow

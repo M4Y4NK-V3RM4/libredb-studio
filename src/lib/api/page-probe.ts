@@ -38,17 +38,18 @@ export function pageOfProbe<Row>(prepared: PreparedQuery, rows: Row[]): { hasMor
  *
  * Read from the request body, so a value can be any JSON: the probe adds one to the limit, and
  * `"500" + 1` is the string `"5001"`, which would run a page ten times the size asked for.
- * Each is therefore required to be a non-negative integer when present.
+ * Each is therefore required to be an integer when present: `limit` at least 1 (a page of zero
+ * rows would offer Load More at the same offset forever), `offset` at least 0.
  */
 export function pageOptionError(options: unknown): string | null {
   if (options === null || typeof options !== "object") return "options must be an object";
   const { limit, offset } = options as Record<string, unknown>;
-  for (const [name, value] of [
-    ["limit", limit],
-    ["offset", offset],
+  for (const [name, value, min] of [
+    ["limit", limit, 1],
+    ["offset", offset, 0],
   ] as const) {
-    if (value !== undefined && !(typeof value === "number" && Number.isInteger(value) && value >= 0)) {
-      return `options.${name} must be a non-negative integer`;
+    if (value !== undefined && !(typeof value === "number" && Number.isInteger(value) && value >= min)) {
+      return `options.${name} must be an integer of at least ${min}`;
     }
   }
   return null;

@@ -3543,39 +3543,45 @@ describe("useQueryExecution", () => {
   test("an unconfirmed rollback never marks the result rolled back", async () => {
     const { tabs, setTabs } = mutableTabs([createTab()]);
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = JSON.parse((init?.body as string) || "{}");
-      if (body.action === "rollback") throw new Error("rollback network failure");
-      return new Response(JSON.stringify(writeResult), {
-        status: 200,
-        headers: { "content-type": "application/json" },
+    try {
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse((init?.body as string) || "{}");
+        if (body.action === "rollback") throw new Error("rollback network failure");
+        return new Response(JSON.stringify(writeResult), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof fetch;
+      const params = createDefaultParams({ tabs, currentTab: tabs[0], setTabs, playgroundMode: true });
+      const { result } = renderHook(() => useQueryExecution(params));
+
+      await act(async () => {
+        await result.current.executeQuery("UPDATE users SET active = false");
       });
-    }) as typeof fetch;
-    const params = createDefaultParams({ tabs, currentTab: tabs[0], setTabs, playgroundMode: true });
-    const { result } = renderHook(() => useQueryExecution(params));
 
-    await act(async () => {
-      await result.current.executeQuery("UPDATE users SET active = false");
-    });
-
-    expect(tabs[0].result?.rowCount).toBe(4);
-    expect(tabs[0].result?.rolledBack).toBeUndefined();
-    globalThis.fetch = originalFetch;
+      expect(tabs[0].result?.rowCount).toBe(4);
+      expect(tabs[0].result?.rolledBack).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test("a statement that ended the SANDBOX transaction is never marked rolled back", async () => {
     const { tabs, setTabs } = mutableTabs([createTab()]);
     const originalFetch = globalThis.fetch;
-    transactionRoute({ ...writeResult, inTransaction: false });
-    const params = createDefaultParams({ tabs, currentTab: tabs[0], setTabs, playgroundMode: true });
-    const { result } = renderHook(() => useQueryExecution(params));
+    try {
+      transactionRoute({ ...writeResult, inTransaction: false });
+      const params = createDefaultParams({ tabs, currentTab: tabs[0], setTabs, playgroundMode: true });
+      const { result } = renderHook(() => useQueryExecution(params));
 
-    await act(async () => {
-      await result.current.executeQuery("ALTER TABLE a RENAME TO b");
-    });
+      await act(async () => {
+        await result.current.executeQuery("ALTER TABLE a RENAME TO b");
+      });
 
-    expect(tabs[0].result?.rolledBack).toBeUndefined();
-    globalThis.fetch = originalFetch;
+      expect(tabs[0].result?.rolledBack).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   // ── Playground rollback fetch failures are swallowed ───────────────────
