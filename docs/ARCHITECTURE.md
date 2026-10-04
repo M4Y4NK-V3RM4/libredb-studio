@@ -303,6 +303,7 @@ src/
 │   │   ├── db/             # Query, objects/ (the object surface), health, maintenance, transactions
 │   │   ├── storage/        # Storage sync API (config, CRUD, migrate)
 │   │   ├── connections/    # managed/ — built-in (seeded) connections listing
+│   │   │                   #   policy/: whether this server allows custom connections
 │   │   ├── agent/          # Agent runs, stream, artifacts, drive (404 unless enabled — §4.9)
 │   │   ├── mcp/            # MCP endpoint (bearer token, 404 unless enabled) and token/ (minting)
 │   │   └── admin/          # Fleet health, audit
@@ -376,6 +377,7 @@ src/
     ├── sql/                 # Statement splitter, alias extractor
     ├── seed/                # Seed connections (config, filter, credential resolver) + libredb-sample seeding
     ├── config/              # auth-env.ts — single JWT_SECRET reader (auth.ts, proxy.ts, oidc.ts)
+    │                        #   custom-connections.ts: the ALLOW_CUSTOM_CONNECTIONS switch
     ├── api/                 # API error codes + object-route helpers
     ├── ssh/                 # SSH tunnel support
     ├── auth.ts              # JWT utilities

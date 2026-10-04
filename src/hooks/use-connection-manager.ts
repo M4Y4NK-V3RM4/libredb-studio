@@ -11,6 +11,13 @@ import { useToast } from "@/hooks/use-toast";
 import { storage } from "@/lib/storage";
 import { logger } from "@/lib/logger";
 import {
+  connectionAllowed,
+  connectionsUnderPolicy,
+  CUSTOM_CONNECTIONS_ALLOWED,
+  readConnectionPolicy,
+  type ConnectionPolicy,
+} from "@/lib/connection-policy";
+import {
   buildConnectionPayload,
   NO_SERVED_SEEDS,
   SEED_CONFIG_UNREADABLE_REASON,
@@ -45,7 +52,9 @@ export function useConnectionManager(storageReady = false) {
   /**
    * The active connection as last committed, for the managed refresh: the refresh runs inside
    * the storage effect, whose closure never sees a later render, and it has to know which
-   * connection is open to keep it open or to say that it is gone.
+   * connection is open to keep it open or to say that it is gone. It holds `visibleActive`, the
+   * connection the user sees, so a connection the custom connections policy hides never counts as
+   * the open one.
    */
   const activeConnectionRef = useRef<DatabaseConnection | null>(null);
   /**
@@ -56,6 +65,21 @@ export function useConnectionManager(storageReady = false) {
    * question a run has to answer before it may persist a bare `seed:<id>`.
    */
   const [servedSeeds, setServedSeeds] = useState<ServedSeeds>(NO_SERVED_SEEDS);
+  /**
+   * What the server lets this user do with connections of their own (`ALLOW_CUSTOM_CONNECTIONS`),
+   * read once from `GET /api/connections/policy` before any connection is made active.
+   *
+   * The list and the active connection this hook RETURNS are derived from it rather than filtered
+   * into state. The shell rebuilds `connections` from storage after a save or a delete
+   * (`src/components/Studio.tsx`), and a list filtered once on load would take a refused
+   * connection back in on the next rebuild; a derived one cannot. The refused connections stay in
+   * the user's storage, so they come back if the operator switches custom connections on again.
+   */
+  const [policy, setPolicy] = useState<ConnectionPolicy>(CUSTOM_CONNECTIONS_ALLOWED);
+  const visibleConnections = useMemo(() => connectionsUnderPolicy(connections, policy), [connections, policy]);
+  /** Null rather than a connection the server refuses, whichever path made it active. */
+  const visibleActive =
+    activeConnection !== null && connectionAllowed(activeConnection, policy) ? activeConnection : null;
   const [schema, setSchema] = useState<readonly DetailedObject[]>([]);
   /**
    * The container the session resolves a bare name in, as the inventory reported it, so the
@@ -258,11 +282,11 @@ export function useConnectionManager(storageReady = false) {
    * rendered from `objectScanDeferred`.
    */
   const loadObjects = useCallback(() => {
-    const conn = activeConnection;
+    const conn = visibleActive;
     if (conn === null) return;
     setScanRequested(conn.id);
     void readSchema(conn);
-  }, [activeConnection, readSchema]);
+  }, [visibleActive, readSchema]);
 
   /**
    * The schema as the AI panels and the agent rail are handed it.
@@ -291,6 +315,8 @@ export function useConnectionManager(storageReady = false) {
 
     let cancelled = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
+    // The policy this mount read, for the seed poll and the managed refresh as well as the first selection.
+    let currentPolicy: ConnectionPolicy = CUSTOM_CONNECTIONS_ALLOWED;
     const stopPoll = () => {
       if (pollTimer) {
         clearInterval(pollTimer);
@@ -407,7 +433,11 @@ export function useConnectionManager(storageReady = false) {
             if (cancelled) return;
             if (merged) {
               setConnections(merged);
-              setActiveConnection((prev) => prev ?? merged[0] ?? null);
+              setActiveConnection((prev) =>
+                prev !== null && connectionAllowed(prev, currentPolicy)
+                  ? prev
+                  : (connectionsUnderPolicy(merged, currentPolicy)[0] ?? null),
+              );
             }
             if (failed) return; // transient HTTP failure — keep polling until the attempt budget runs out
             const dismissedNow = new Set(storage.getDismissedSeeds());
@@ -445,20 +475,27 @@ export function useConnectionManager(storageReady = false) {
       discards edits and re-reads the schema (Studio's connection-change effect). When its id is
       gone, the first remaining connection becomes active and the user is told, once, because
       the next refresh finds the new active connection listed.
+
+      Listed means listed for the user: the policy's view of the new list, the view this hook
+      returns, so a connection ALLOW_CUSTOM_CONNECTIONS hides is never kept, chosen or made
+      active. The hidden ones stay in the list state, as they do after the first load.
     */
     const applyManagedRefresh = (next: DatabaseConnection[]) => {
       const active = activeConnectionRef.current;
+      const selectable = connectionsUnderPolicy(next, currentPolicy);
       setConnections(
         active !== null && next.some((c) => c.id === active.id)
           ? next.map((c) => (c.id === active.id ? active : c))
           : next,
       );
       if (active === null) {
-        setActiveConnection((prev) => prev ?? next[0] ?? null);
+        setActiveConnection((prev) =>
+          prev !== null && connectionAllowed(prev, currentPolicy) ? prev : (selectable[0] ?? null),
+        );
         return;
       }
-      if (next.some((c) => c.id === active.id)) return;
-      setActiveConnection(next[0] ?? null);
+      if (selectable.some((c) => c.id === active.id)) return;
+      setActiveConnection(selectable[0] ?? null);
       toast({ title: "Connection removed", description: `${active.name} is no longer available.` });
     };
 
@@ -498,6 +535,10 @@ export function useConnectionManager(storageReady = false) {
 
     const initializeConnections = async () => {
       const loadedConnections = storage.getConnections();
+      // Read before anything is selected, so the first active connection is one the server opens.
+      currentPolicy = await readConnectionPolicy();
+      if (cancelled) return;
+      setPolicy(currentPolicy);
 
       // Fetch managed (seed) connections
       let managedMerged = false;
@@ -515,10 +556,11 @@ export function useConnectionManager(storageReady = false) {
           setConnections(merged);
           managedMerged = true;
 
-          if (merged.length > 0) {
+          const selectable = connectionsUnderPolicy(merged, currentPolicy);
+          if (selectable.length > 0) {
             const savedId = storage.getActiveConnectionId();
-            const saved = savedId ? merged.find((c: DatabaseConnection) => c.id === savedId) : null;
-            setActiveConnection(saved ?? merged[0]);
+            const saved = savedId ? selectable.find((c: DatabaseConnection) => c.id === savedId) : null;
+            setActiveConnection(saved ?? selectable[0]);
           }
         }
         startSeedPoll(pendingSeeds);
@@ -536,10 +578,11 @@ export function useConnectionManager(storageReady = false) {
 
       if (!managedMerged) {
         setConnections(loadedConnections);
-        if (loadedConnections.length > 0) {
+        const selectable = connectionsUnderPolicy(loadedConnections, currentPolicy);
+        if (selectable.length > 0) {
           const savedId = storage.getActiveConnectionId();
-          const saved = savedId ? loadedConnections.find((c: DatabaseConnection) => c.id === savedId) : null;
-          setActiveConnection(saved ?? loadedConnections[0]);
+          const saved = savedId ? selectable.find((c: DatabaseConnection) => c.id === savedId) : null;
+          setActiveConnection(saved ?? selectable[0]);
         }
       }
 
@@ -562,21 +605,21 @@ export function useConnectionManager(storageReady = false) {
 
   // Persist active connection ID
   useEffect(() => {
-    activeConnectionRef.current = activeConnection;
-    if (activeConnection) {
-      storage.setActiveConnectionId(activeConnection.id);
+    activeConnectionRef.current = visibleActive;
+    if (visibleActive) {
+      storage.setActiveConnectionId(visibleActive.id);
     }
-  }, [activeConnection]);
+  }, [visibleActive]);
 
   // Connection pulse — quick health check every 60s
   useEffect(() => {
-    if (!activeConnection) return;
+    if (!visibleActive) return;
     const checkHealth = async () => {
       try {
         const res = await appFetch("/api/db/health", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(buildConnectionPayload(activeConnection)),
+          body: JSON.stringify(buildConnectionPayload(visibleActive)),
         });
         setConnectionPulse(res.ok ? "healthy" : "degraded");
       } catch {
@@ -586,13 +629,13 @@ export function useConnectionManager(storageReady = false) {
     checkHealth().catch(() => {});
     const interval = setInterval(checkHealth, 60000);
     return () => clearInterval(interval);
-  }, [activeConnection]);
+  }, [visibleActive]);
 
   return {
-    connections,
+    connections: visibleConnections,
     setConnections,
     servedSeeds,
-    activeConnection,
+    activeConnection: visibleActive,
     setActiveConnection,
     schema,
     setSchema,
@@ -600,15 +643,20 @@ export function useConnectionManager(storageReady = false) {
     isLoadingSchema,
     // Derived rather than reset in the pulse effect: with no active connection
     // there is nothing to report on, and the render already knows that.
-    connectionPulse: activeConnection === null ? null : pulseState,
+    connectionPulse: visibleActive === null ? null : pulseState,
     fetchSchema,
     /**
      * Whether the active connection is holding its catalog reads back. False with no
      * active connection: there is nothing to defer, not a deferral.
      */
-    objectScanDeferred: activeConnection !== null && scanDeferred(activeConnection),
+    objectScanDeferred: visibleActive !== null && scanDeferred(visibleActive),
     loadObjects,
     schemaContext,
     defaultContainer,
+    /**
+     * Whether the server lets this user create, edit or open connections of their own. The shell
+     * withholds every control that would make one while it is false.
+     */
+    customConnections: policy.customConnections,
   };
 }

@@ -564,6 +564,34 @@ Deleting a `managed: false` connection from the sidebar does not simply remove i
 
 ---
 
+## Custom Connections
+
+`ALLOW_CUSTOM_CONNECTIONS` decides whether a signed-in user may open a connection of their own, one that is not in this file.
+It is on when unset.
+`false`, `0`, `off` or `no`, trimmed and in any letter case, switch it off; `true`, `1`, `on` and `yes` keep it on, and any other value keeps it on and logs one warning naming the value.
+
+Switch it off where Studio shares a network with services its users must not reach, such as a platform's overlay network or a cluster namespace: with custom connections on, any account that can sign in can connect to any host and port that network reaches.
+
+Switched off, every route that builds a database provider refuses a connection the request supplies, before any provider is built, with `403` and `{ "error": "Custom connections are disabled on this server", "code": "CUSTOM_CONNECTIONS_DISABLED", "statusCode": 403 }`.
+The code tells this refusal apart from the role check's, which is also a `403` and carries `AUTH_ERROR`.
+The refusal is made in `resolveConnection()` (`src/lib/seed/resolve-connection.ts`), which every database route resolves its connection through, and `POST /api/admin/fleet-health` resolves each item through it too and reports a refused one as that item's error.
+The agent runtime and the MCP endpoint only ever open a seed by its id, so nothing changes there.
+
+| Connection | With custom connections off |
+|------------|-----------------------------|
+| `managed: true` seed, a connection [Platform discovery (CapRover)](#platform-discovery-caprover) found included | Listed, and opened by its id as before |
+| `managed: false` seed | Listed and opened. Its editable copy keeps the id `seed:<id>`, and the server resolves that id from this file and ignores the copy's own fields, exactly as it does with the switch on |
+| Built-in samples | Unmanaged seeds, so the row above applies |
+| A connection the user created, or a duplicate of any connection | Hidden in the editor and refused by the server |
+
+The editor reads the switch once per page load from `GET /api/connections/policy` and withholds every control that creates or repoints a connection of the user's own: New connection, Add Connection, the command palette's New Connection, Edit and Duplicate.
+Delete stays; on an unmanaged seed's copy it dismisses the seed, as it always does, and deleting the open connection selects the first connection listed.
+An open tab's refresh of the managed list (see [In an open tab](#in-an-open-tab)) follows the same rule: when it withdraws the open connection, or none is open, the connection it makes active is the first one listed, never a hidden one.
+The admin pages, the monitoring page and the schema diff list connections under the same rule.
+The user's own connections stay in their storage while hidden, and reappear when the switch is turned back on, each in the place it held in the saved order, even if the seeds around it were reordered meanwhile.
+
+---
+
 ## Hot Reload
 
 The config file is **cached in memory** with a TTL (default 60 seconds). When the file changes:
@@ -874,7 +902,8 @@ The 5000 is the floor `NEXT_PUBLIC_MANAGED_REFRESH_FLOOR_MS`, which is inlined a
 An install that keeps the default `SEED_CACHE_TTL_MS` of 60000 therefore refreshes an open tab once a minute, while the auto-connect template sets 5000, so its tabs refresh every 5 seconds.
 With the template's values a database appears or disappears in an open tab within about 20 seconds of the change in CapRover: the exporter scans every 10 seconds, Studio re-reads the export at most every 5, and the tab refreshes every 5.
 The template's end text says about 30 seconds, which also covers a database that is still starting: an image CapRover built itself, as the MariaDB and KeyDB templates produce, is listed only once its database accepts connections.
-The active connection stays open while its id is still listed; when it is withdrawn, the first remaining connection becomes active and Studio says so once.
+The active connection stays open while its id is still listed; when it is withdrawn, the first remaining connection the sidebar lists becomes active and Studio says so once.
+With `ALLOW_CUSTOM_CONNECTIONS` off that is never one of the user's own connections, which stay hidden (see [Custom Connections](#custom-connections)).
 Pages that use the lighter connection list (the admin Overview and Operations tabs, Schema Diff and Monitoring) load it once and need a reload.
 
 ---
@@ -929,6 +958,7 @@ Pages that use the lighter connection list (the admin Overview and Operations ta
 - User role is extracted from the JWT session **server-side** — never from client headers or request params.
 - Every database operation (query, schema, health check, etc.) goes through `resolveConnection()` which verifies role access before returning credentials.
 - Role check failures return 403 with no credential information.
+- While `ALLOW_CUSTOM_CONNECTIONS` is off, `resolveConnection()` also refuses a connection supplied in the request with 403, so only seeds reach a provider (see [Custom Connections](#custom-connections)).
 
 ### Audit Trail
 
@@ -947,6 +977,7 @@ This is the standard application logger (`src/lib/logger.ts`), not a persisted a
 |----------|---------|-------------|
 | `SEED_CONFIG_PATH` | `/app/config/seed-connections.yaml` | Path to config file |
 | `SEED_CACHE_TTL_MS` | `60000` | Cache TTL in milliseconds |
+| `ALLOW_CUSTOM_CONNECTIONS` | `true` | `false`, `0`, `off` or `no` refuses every connection that is not a seed; see [Custom Connections](#custom-connections) |
 | `SEED_LITERAL_VALUES` | unset | `true`, `1`, `on` or `yes` (trimmed, any case) reads every seed value as written: no `${ENV_VAR}` or `${vault:...}` reference is resolved and the plaintext-password warning is not logged. `false`, `0`, `off`, `no` or empty keep references resolved, and so does any other value, with one warning ([Literal values written by a platform](#literal-values-written-by-a-platform)) |
 | `SEED_DISCOVERY_PATH` | unset (off) | Path of the discovery export file inside the Studio container; see [Platform discovery (CapRover)](#platform-discovery-caprover) |
 | `SEED_DISCOVERY_MAX_AGE_MS` | `60000` | Age of the export's `generatedAt` after which discovered connections are withdrawn; keep it well above the exporter's `DISCOVERY_INTERVAL_MS` (10000 by default) |
