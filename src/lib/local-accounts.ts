@@ -527,15 +527,15 @@ async function insertLaunchAccount(provider: ServerStorageProvider, launch: Laun
  *
  * In the server store every session must match a stored account, so the launch provides one, and it reaches
  * only an account a launch created for the same platform identity. An email with no account gets one, bound
- * to the token's issuer and subject. An existing account is matched without regard to case, as password
- * login matches it, and is refused unless it carries that same binding and holds no authenticator and no
- * passkey: matching by email alone would hand a launch any password account with that address, the seeded
- * ADMIN_EMAIL included, and an email the platform reassigned would reach the previous owner's account. The
- * binding is checked before the disabled flag, so a refusal tells
- * nobody but the bound person whether an account is disabled. A bound account takes the token's role when it differs, which moves the session
- * version on and ends its other sessions, exactly as an admin's role change does, and the store still
- * refuses to remove the last enabled admin. A disabled account is refused and never revived: the platform
- * says who the person is, and disabling is Studio's own decision about them.
+ * to the token's issuer and subject. An existing account is matched without regard to case, as password login
+ * matches it, and is refused unless it carries that same binding and holds no authenticator and no passkey:
+ * matching by email alone would hand a launch any password account with that address, the seeded ADMIN_EMAIL
+ * included, and an email the platform reassigned would reach the previous owner's account. The binding is
+ * checked before the disabled flag, so a refusal tells nobody but the bound person whether an account is
+ * disabled. A bound account takes the token's role when it differs, which moves the session version on and
+ * ends its other sessions, exactly as an admin's role change does, and the store still refuses to remove the
+ * last enabled admin. A disabled account is refused and never revived: the platform says who the person is,
+ * and disabling is Studio's own decision about them.
  *
  * The registry is reconciled and seeded first, as on every other sign-in path, so a launch into an empty
  * store can never take the place of the environment admin.

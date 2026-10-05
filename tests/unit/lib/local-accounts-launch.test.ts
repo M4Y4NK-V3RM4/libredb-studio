@@ -58,6 +58,12 @@ async function thrown(run: () => Promise<unknown>): Promise<AccountError> {
   throw new Error("expected an AccountError");
 }
 
+async function expectNotLinked(identity: LaunchIdentity): Promise<void> {
+  const error = await thrown(() => provisionLaunchAccount(identity));
+  expect(error.status).toBe(403);
+  expect(error.message).toBe(NOT_LINKED);
+}
+
 describe("provisionLaunchAccount without a server store", () => {
   const KEYS = ["NEXT_PUBLIC_AUTH_PROVIDER", "STORAGE_PROVIDER", "STORAGE_POSTGRES_URL"] as const;
   const saved: Record<string, string | undefined> = {};
@@ -94,12 +100,8 @@ describe("provisionLaunchAccount without a server store", () => {
     process.env.NEXT_PUBLIC_AUTH_PROVIDER = "local";
     delete process.env.STORAGE_PROVIDER;
     // tests/setup.ts sets ADMIN_EMAIL to ADMIN, and USER_EMAIL to USER with a USER_PASSWORD, so both sign in with one.
-    const refused = [launch({ email: "Admin@LibreDB.org", role: "admin" }), launch({ email: "USER@libredb.org" })];
-    for (const identity of refused) {
-      const error = await thrown(() => provisionLaunchAccount(identity));
-      expect(error.status).toBe(403);
-      expect(error.message).toBe(NOT_LINKED);
-    }
+    await expectNotLinked(launch({ email: "Admin@LibreDB.org", role: "admin" }));
+    await expectNotLinked(launch({ email: "USER@libredb.org" }));
   });
 });
 
@@ -157,11 +159,8 @@ describe("provisionLaunchAccount in the server store", () => {
     await requireAccountStore();
     const provider = await fixture.provider();
     const before = await provider.listAccounts();
-    for (const refused of [launch({ email: USER }), launch({ email: "ADMIN@libredb.org", role: "admin" })]) {
-      const error = await thrown(() => provisionLaunchAccount(refused));
-      expect(error.status).toBe(403);
-      expect(error.message).toBe(NOT_LINKED);
-    }
+    await expectNotLinked(launch({ email: USER }));
+    await expectNotLinked(launch({ email: "ADMIN@libredb.org", role: "admin" }));
     expect(await provider.listAccounts()).toEqual(before);
     expect(accountEvents()).toEqual([]);
   });
@@ -176,9 +175,8 @@ describe("provisionLaunchAccount in the server store", () => {
 
   test("refuses an account a launch created for another platform identity", async () => {
     await provisionLaunchAccount(launch());
-    for (const other of [launch({ subject: "platform-user-2" }), launch({ issuer: "another-platform" })]) {
-      expect((await thrown(() => provisionLaunchAccount(other))).status).toBe(403);
-    }
+    expect((await thrown(() => provisionLaunchAccount(launch({ subject: "platform-user-2" })))).status).toBe(403);
+    expect((await thrown(() => provisionLaunchAccount(launch({ issuer: "another-platform" })))).status).toBe(403);
     expect((await (await fixture.provider()).getAccount(MEMBER))?.passwordHash).toBe(BOUND);
   });
 
