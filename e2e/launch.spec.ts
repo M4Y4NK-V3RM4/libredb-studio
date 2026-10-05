@@ -8,13 +8,14 @@
  * Opening the named connection is the editor's ?connection= deep link, which lands before launch sign-in on
  * this branch; it removes the parameter once the connection is open, so the editor's bare URL is the end state.
  */
+import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { mintLaunchToken } from "./helpers/launch-token";
 
 test.describe.configure({ timeout: 120_000 });
 
 function uniqueEmail(): string {
-  return `launch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
+  return `launch-${randomUUID()}@example.com`;
 }
 
 test("a launch link signs a new person in and opens the connection it names", async ({ page }) => {
