@@ -177,7 +177,9 @@ export async function verifyLaunchToken(
     throw error;
   }
   const claims = claimsOf(payload, config.audience);
-  const claim = claimLaunchJti(claims.jti, (claims.exp + LAUNCH_CLOCK_TOLERANCE_SECONDS) * 1000, now);
+  // jose floors the current time, so a fractional exp verifies until ceil(exp) plus the tolerance.
+  const spentUntil = (Math.ceil(claims.exp) + LAUNCH_CLOCK_TOLERANCE_SECONDS) * 1000;
+  const claim = claimLaunchJti(claims.jti, spentUntil, now);
   if (claim === "replayed") throw new LaunchTokenError("launch_token_replayed");
   if (claim === "full") throw new LaunchTokenError("launch_capacity_exceeded");
   return claims;

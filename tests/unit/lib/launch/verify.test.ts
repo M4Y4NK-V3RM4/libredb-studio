@@ -203,6 +203,13 @@ describe("verifyLaunchToken", () => {
     expect(await refusal(token, NOW + 64_000)).toBe("launch_token_replayed");
   });
 
+  // jose floors the current time, so a fractional exp still verifies until ceil(exp) plus the tolerance.
+  test("a token with a fractional expiry stays spent for as long as it could still verify", async () => {
+    const token = await sign(claims({ exp: IAT + 30.5 }));
+    await verifyLaunchToken(token, CONFIG, NOW + 1000);
+    expect(await refusal(token, NOW + 35_600)).toBe("launch_token_replayed");
+  });
+
   test("a refused token does not spend its jti", async () => {
     const jti = "jti-shared";
     expect(await refusal(await sign(claims({ jti, email: "no-at-sign" })))).toBe("launch_token_malformed");
