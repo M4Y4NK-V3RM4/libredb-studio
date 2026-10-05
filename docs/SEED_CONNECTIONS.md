@@ -632,6 +632,7 @@ The colon may be URL-encoded, as in `/?connection=seed%3Aprod-db`.
 The editor reads the parameter once its connection list has loaded, opens that connection instead of the one it would open by default, and removes the parameter from the address bar, so a reload or a copied address does not repeat it.
 Opened without a session, the link goes to the sign-in page, which returns to it after the user signs in.
 When the list the user sees does not hold that id yet, the editor keeps its default selection and opens the connection at the first refresh of the managed list that lists it (see [Hot Reload](#hot-reload)), because a seed the server has not re-read yet is listed a little later.
+A connection the user chooses while the link is pending cancels it, so a later refresh never switches away from it.
 If the first refresh one seed-cache lifetime (`SEED_CACHE_TTL_MS`) after the load does not list it either, the editor shows a notice that reads the same whatever the cause: an id that does not exist, a seed whose `roles` leave the user out, or a connection of the user's own while [Custom Connections](#custom-connections) are switched off.
 The notice therefore does not reveal which seed ids exist for other roles.
 When the managed list cannot be loaded at all, the notice says so instead, and the link opens only a connection the browser holds itself.

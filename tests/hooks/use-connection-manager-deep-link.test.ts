@@ -225,6 +225,37 @@ describe("opening the editor on a linked connection", () => {
     expect(mockToastSuccess).not.toHaveBeenCalled();
   });
 
+  test("a connection the reader chooses while the link is pending cancels the link, with no switch and no toast later", async () => {
+    // Switching the active connection resets the transaction, turns editing off and discards
+    // pending grid edits (Studio's connection-change effect), so a link that is still pending must
+    // not take the reader away from a connection they picked themselves.
+    window.history.replaceState(null, "", "/?connection=seed%3Abilling");
+    let calls = 0;
+    const fetchMock = mockGlobalFetch(
+      routes(() => {
+        calls += 1;
+        return answer(calls === 1 ? [seed("orders"), seed("audit")] : [seed("orders"), seed("audit"), seed("billing")]);
+      }),
+    );
+
+    const { result } = renderHook(() => useConnectionManager(true));
+
+    await waitFor(() => expect(result.current.activeConnection?.id).toBe("seed:orders"));
+    const audit = result.current.connections.find((c) => c.id === "seed:audit");
+    act(() => {
+      result.current.setActiveConnection(audit ?? null);
+    });
+    await waitFor(() => expect(result.current.activeConnection?.id).toBe("seed:audit"));
+
+    passSeedCache();
+    focusWindow();
+    await waitFor(() => expect(managedCalls(fetchMock)).toBe(2));
+    await sleep(50);
+    expect(result.current.activeConnection?.id).toBe("seed:audit");
+    expect(result.current.connections.map((c) => c.id)).toContain("seed:billing");
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+
   test("a refresh that fails leaves the link pending, and the next refresh that answers decides", async () => {
     window.history.replaceState(null, "", "/?connection=seed%3Abilling");
     let calls = 0;

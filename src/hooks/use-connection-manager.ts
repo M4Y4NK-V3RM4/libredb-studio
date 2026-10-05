@@ -1,7 +1,7 @@
 "use client";
 
 import { appFetch, SESSION_REQUIRED_CODE } from "@/lib/config/base-path";
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type SetStateAction } from "react";
 import type { DatabaseConnection } from "@/lib/types";
 import { detailedObjects, schemaContextOf, type DetailedObject } from "@/lib/db/detailed-object";
 import { relationKindIds } from "@/lib/db/object-kinds";
@@ -90,6 +90,22 @@ export function useConnectionManager(storageReady = false) {
    * the open one.
    */
   const activeConnectionRef = useRef<DatabaseConnection | null>(null);
+  /**
+   * The id of a `?connection=` link the first load could not open, which a later managed refresh
+   * opens or decides (settlePendingLink in the storage effect). A ref rather than a variable of
+   * that effect because the reader's own selection, made through the setter this hook returns,
+   * cancels it.
+   */
+  const pendingLinkIdRef = useRef<string | null>(null);
+  /**
+   * The setter the shell picks connections with. A selection of the reader's own cancels a pending
+   * link, so a refresh that lists the linked connection later does not switch away from the
+   * reader's choice and discard its editor state. The hook's own selections use the raw setter.
+   */
+  const selectConnection = useCallback((next: SetStateAction<DatabaseConnection | null>) => {
+    pendingLinkIdRef.current = null;
+    setActiveConnection(next);
+  }, []);
   /**
    * The server's own seed descriptors, kept alongside the merged list rather than
    * folded into it. The merge deliberately prefers an existing editable copy over the
@@ -512,23 +528,24 @@ export function useConnectionManager(storageReady = false) {
       it, whenever it runs. A miss counts only one seed-cache lifetime (the first load's cacheHint,
       recorded in initializeConnections) after the first load answered, because a refresh on focus
       or visibilitychange runs at once and the server answers it from the cache that load read.
-      Only the first miss after that tells the user.
+      Only the first miss after that tells the user. A connection the reader chooses meanwhile
+      cancels the link (selectConnection above).
     */
-    let pendingLinkId: string | null = null;
+    pendingLinkIdRef.current = null;
     let firstLoadAnsweredAt = 0;
     let firstLoadCacheHint: number | null = null;
 
     const settlePendingLink = (next: DatabaseConnection[]) => {
-      if (pendingLinkId === null) return;
-      const linkedId = pendingLinkId;
+      const linkedId = pendingLinkIdRef.current;
+      if (linkedId === null) return;
       const linked = connectionsUnderPolicy(next, currentPolicy).find((c) => c.id === linkedId);
       if (linked !== undefined) {
-        pendingLinkId = null;
+        pendingLinkIdRef.current = null;
         setActiveConnection(linked);
         return;
       }
       if (Date.now() < firstLoadAnsweredAt + (firstLoadCacheHint ?? 0)) return;
-      pendingLinkId = null;
+      pendingLinkIdRef.current = null;
       toast({
         title: "Connection not available",
         description: "The link names a connection that is not available to you, so it was not opened.",
@@ -633,7 +650,7 @@ export function useConnectionManager(storageReady = false) {
         setActiveConnection(linked);
         return;
       }
-      if (linkedId !== null && answered) pendingLinkId = linkedId;
+      if (linkedId !== null && answered) pendingLinkIdRef.current = linkedId;
       if (linkedId !== null && !answered) {
         toast({
           title: "Connections not loaded",
@@ -747,7 +764,7 @@ export function useConnectionManager(storageReady = false) {
     setConnections,
     servedSeeds,
     activeConnection: visibleActive,
-    setActiveConnection,
+    setActiveConnection: selectConnection,
     schema,
     setSchema,
     schemaError,
