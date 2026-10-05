@@ -125,6 +125,7 @@ describe("POST /api/auth/launch configuration", () => {
       success: false,
       message: "LAUNCH_TOKEN_SECRET must be at least 32 characters: launch sign-in is unavailable until it is fixed.",
     });
+    expect(routeEvents()).toEqual([]);
   });
 
   test("answers 503 when LAUNCH_TOKEN_SECRET equals JWT_SECRET, and signs in nobody", async () => {
@@ -142,6 +143,7 @@ describe("POST /api/auth/launch configuration", () => {
       process.env.JWT_SECRET = jwtSecret;
     }
     expect(cookieJar.get("auth-token")).toBeUndefined();
+    expect(routeEvents()).toEqual([]);
   });
 
   test("answers 503 under NEXT_PUBLIC_AUTH_PROVIDER=oidc, signs in nobody and records nothing", async () => {
@@ -289,11 +291,15 @@ describe("POST /api/auth/launch budget", () => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       expect((await send({ token: await mint({ aud: "studio-2" }) }, ip)).status).toBe(401);
     }
-    const response = await send({ token: await mint() }, ip);
+    const token = await mint();
+    const response = await send({ token }, ip);
     expect(response.status).toBe(429);
     expect(response.headers.get("Retry-After")).not.toBeNull();
     expect((await response.json()).code).toBe("RATE_LIMITED");
     expect(cookieJar.get("auth-token")).toBeUndefined();
+    // The token was never verified, so its jti is unspent: once the budget is cleared, it still signs in.
+    clearRateLimitState();
+    expect((await send({ token }, ip)).status).toBe(200);
   });
 });
 
