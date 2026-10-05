@@ -571,6 +571,7 @@ It is on when unset.
 `false`, `0`, `off` or `no`, trimmed and in any letter case, switch it off; `true`, `1`, `on` and `yes` keep it on, and any other value keeps it on and logs one warning naming the value.
 
 Switch it off where Studio shares a network with services its users must not reach, such as a platform's overlay network or a cluster namespace: with custom connections on, any account that can sign in can connect to any host and port that network reaches.
+The switch limits the connections Studio itself opens, not what a seeded engine can reach on its own, for example through Postgres `dblink` or `postgres_fdw`, ClickHouse `remote()` or `url()`, MySQL `FEDERATED` tables or the brokers a Kafka cluster advertises, so grant a seed's account only what its users may reach from that engine.
 
 Switched off, every route that builds a database provider refuses a connection the request supplies, before any provider is built, with `403` and `{ "error": "Custom connections are disabled on this server", "code": "CUSTOM_CONNECTIONS_DISABLED", "statusCode": 403 }`.
 The code tells this refusal apart from the role check's, which is also a `403` and carries `AUTH_ERROR`.
