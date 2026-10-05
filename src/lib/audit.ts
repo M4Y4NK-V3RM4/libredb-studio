@@ -163,6 +163,15 @@ export type AuditReason =
   | "launch_token_replayed"
   /** A valid token refused while this process remembers as many unexpired launch tokens as it holds. */
   | "launch_capacity_exceeded"
+  /** A valid launch token for an account that is disabled in the server store. */
+  | "launch_account_disabled"
+  /**
+   * A valid launch token for an account a launch cannot sign in to: one with a password, an authenticator or
+   * a passkey, or one a launch created for another platform identity (issuer and subject).
+   */
+  | "launch_identity_mismatch"
+  /** A valid launch token for another account than the one this browser is signed in as; the session stays. */
+  | "launch_session_conflict"
   // Agent execution path (#328). The thirteen `agent_*` codes below mirror
   // `PolicyDenyCode` one-for-one, plus the two outcomes that are not policy
   // denials: an operation that may only ever require approval, and a provider

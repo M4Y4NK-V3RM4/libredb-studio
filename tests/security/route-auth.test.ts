@@ -249,6 +249,7 @@ const ROUTES_WITHOUT_A_PROVIDER: Record<string, string> = {
     "hands back rows one run already stored, from process memory; no database or LLM provider is reached to answer it (GET, no POST export). Same guardRoute path as above, through src/lib/api/agent-run-access.ts, and tests/api/agent/artifacts.test.ts proves an unauthenticated caller gets 401 and reads nothing",
   "agent/runs/[runId]/stream":
     "follows one run's own durable ledger; no database or LLM provider (GET, no POST export). Same guardRoute path as above",
+  "auth/launch": "exchanges a platform launch token for a session; a session cannot be required before one exists",
   "auth/login": "authenticates the credential itself; a session cannot be required before one exists",
   "auth/totp":
     "enrols a TOTP secret on the caller's own stored account; the storage backend is not a user database or LLM provider",
@@ -457,6 +458,9 @@ describe("routes that reach a provider require a session", () => {
     "@/lib/config/custom-connections":
       "reads ALLOW_CUSTOM_CONNECTIONS from process.env and logs an unrecognised value once; opens nothing",
     "@/lib/is-record": "a plain-object type guard; data only",
+    "@/lib/launch/config": "reads the three LAUNCH_TOKEN_* variables; opens nothing",
+    "@/lib/launch/verify":
+      "verifies a launch token with jose and spends its jti in an in-process map; computation only",
     "@/lib/local-accounts":
       "the local account registry on the app's storage backend; opens no user database or LLM provider",
     "@/lib/passkey/management":
