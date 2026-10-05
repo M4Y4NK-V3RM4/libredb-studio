@@ -36,6 +36,7 @@ test-results
 data-e2e-offline
 data-e2e-base-path
 data-e2e-launch
+data-e2e-passkey
 .loop
 loop
 .claude
