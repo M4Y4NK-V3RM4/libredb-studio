@@ -430,6 +430,16 @@ describe("LibSQLProvider credentials", () => {
     await provider.disconnect();
   });
 
+  test("drops the user of a connection whose connection string does not parse, so it sends no Basic header", async () => {
+    // The string is ignored and the host and port fields are used (docs/BACKLOG.md D232), but the user is dropped
+    // as on every connection-string path, so the password still goes out as a bearer token.
+    const seen = authorizationHeaders();
+    const provider = await connected({ user: "dropped", password: "tok-456", connectionString: "not a url" });
+
+    expect(seen).toEqual(["Bearer tok-456"]);
+    await provider.disconnect();
+  });
+
   test("reports a Basic credential the server refused as an authentication failure", async () => {
     // The body sqld's source builds for a refused Basic credential, AuthError::BasicRejected inside
     // Error::AuthError, answered 401 (`libsql-server/src/error.rs` and `src/auth/errors.rs` at
