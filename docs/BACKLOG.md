@@ -31,14 +31,14 @@ None of it is a GitHub issue.
 - [Drivers and connections](#drivers-and-connections) — D1-D233, U17 · 143
 - [Value interpolation](#value-interpolation) — V1
 - [Row editing](#row-editing) — R1–R3 · 3
-- [Studio UI and query execution](#studio-ui-and-query-execution) — X2-X26, U2-U89 · 81
+- [Studio UI and query execution](#studio-ui-and-query-execution) — X2-X26, U2-U92 · 84
 - [Dependencies](#dependencies) — P1-P9 · 7
 - [Documentation](#documentation) — DOC3-DOC18 · 15
 - [Release pipeline](#release-pipeline) — REL1-REL8 · 8
 - [Chart configuration surface](#chart-configuration-surface) — N1 · 1
 - [Security Phase 1 deferrals](#security-phase-1-deferrals) — H1–H14 · 4
 - [Security Phase 2 deferrals](#security-phase-2-deferrals) — C3–C11 · 6
-- [Security Phase 3 deferrals](#security-phase-3-deferrals) — K4-K5 · 2
+- [Security Phase 3 deferrals](#security-phase-3-deferrals) — K4-K8 · 5
 - [Security scanner triage](#security-scanner-triage) — SCAN1 · 1
 - [Agent M1 deferrals (#328)](#agent-m1-deferrals-328) — A1–A8 · 7
 - [Agent M2 deferrals (#329)](#agent-m2-deferrals-329) — B2-B100 · 36
@@ -3954,6 +3954,37 @@ Found by the end-to-end test pass of 2026-10-03 and 2026-10-04.
 
 **Done when:** a Source tab title can use a provider-supplied display form of the path (for a rule group, `e2e_group (rules.yml)`), still unique per path, without a type-id branch in the tab manager, and a test pins the Prometheus rule group's title.
 
+### U90. The custom connections switch loads with a flash and an extra round trip
+
+`useConnectionManager` (`src/hooks/use-connection-manager.ts`) starts with the policy that allows custom connections until `GET /api/connections/policy` answers, so the editor draws New, Edit and Duplicate for that moment on a server that has custom connections off; the server still refuses them.
+The policy read is awaited before the managed list is fetched instead of beside it, one extra round trip on every editor load.
+`src/app/api/admin/fleet-health/route.ts` imports `logger` without using it, a lint warning left alone because a concurrent fix edits the same import block.
+
+Found 2026-10-05 by the final review of the platform integration branch.
+Not fixed there: the flash needs a "policy unknown" state, and the import block was kept unchanged to avoid a merge conflict.
+
+**Done when:** a policy-unknown state withholds the controls, the policy and managed reads run in parallel while no connection is made active before the policy is known, and the unused import is gone.
+
+### U91. A user typed for another engine rides along to libSQL
+
+The connection form keeps its `user` when the type changes (the type buttons in `src/components/ConnectionModal.tsx` call `setType` and reset only the port).
+libSQL now takes a user and sends HTTP Basic when one is set, so a name typed for another engine is saved on a libSQL connection, and a server that expects a bearer token answers `401`.
+
+Found 2026-10-05 by the final review of the platform integration branch.
+Not fixed there: it needs a form-state change outside that work.
+
+**Done when:** switching to a type that newly takes a user starts that field empty, or the form asks, with a test.
+
+### U92. The remembered active connection outlives its connection
+
+`useConnectionManager` writes `libredb_active_connection_id` only while a connection is active, so when the last connection is closed or withdrawn the key keeps the last id.
+The behaviour is on `main` from before the platform integration branch.
+
+Found 2026-10-05 by the final review of the platform integration branch.
+Not fixed there: it predates that work.
+
+**Done when:** the id is cleared when the last connection closes or is withdrawn, with a test.
+
 ## Dependencies
 
 ### P1. The desktop shell's `glib` advisory has no reachable fix while Tauri v2 targets GTK 3
@@ -4774,6 +4805,39 @@ Found 2026-10-04 by the review of the launch sign-in design, whose own account l
 Not fixed there: the store schema is outside that work.
 
 **Done when:** both stores refuse a second account whose email differs from an existing one only in letter case, for example through a unique index on `lower(email)` with a migration that reports existing case-variant rows, and a test on each store pins the refusal.
+
+### K6. Launch sign-in leaves two outcomes out of the audit log
+
+`POST /api/auth/launch` (`src/app/api/auth/launch/route.ts`) audits and charges every refusal through its `refuse` helper, which records `login_failure` and spends the address's `login_client` budget.
+An error raised after the token verified does not go through it: an `AuthConfigError` from `getAuthUsers` or session signing is answered `503`, and a store error `500`, with a log line only, so the jti is spent while the admin audit log and the budget show nothing.
+The `launch_session_conflict` refusal records only the launch's email as its user; the account whose session the browser kept goes into the response body (`signedInAs`) but not into the audit record, so the target of a link-swap attempt is invisible to an admin.
+
+Found 2026-10-05 by the final review of the platform integration branch.
+Not fixed there: both are audit enrichments that need their own reasons and tests, and the refusals themselves are correct.
+
+**Done when:** an error after verification and a session conflict each emit an audit record with a reason and the account they protect, with tests on the route.
+
+### K7. Orphan per-user storage attaches to the first launch for its email
+
+In store mode, `user_storage` rows are keyed by the email (`user_id` in `src/lib/storage/providers/sqlite.ts` and `postgres.ts`), and an admin's deletion of an account removes its rows in the same transaction.
+Rows with no account row can still exist, for example left by an earlier deployment that signed in with OIDC, and `provisionLaunchAccount` in `src/lib/local-accounts.ts` creates an account for a new email without looking at them.
+So whoever a launch first provisions for that email inherits that storage, saved connections included.
+
+Found 2026-10-05 by the final review of the platform integration branch.
+Not fixed there: only a change of authentication mode leaves such rows, and the choice between refusing, clearing and documenting is a product decision.
+
+**Done when:** provisioning refuses or clears orphan storage for an email it creates, or `docs/LAUNCH.md` states the rule, with a test either way.
+
+### K8. A custom-connection refusal leaves no audit record
+
+With `ALLOW_CUSTOM_CONNECTIONS=false`, `resolveConnection` in `src/lib/seed/resolve-connection.ts` refuses a connection the request supplies with `403` and only logs it with `logger.warn`.
+A role refusal emits `permission_denied` through `auditRoleDenial` in `src/lib/api/require-session.ts`, rate limited per user, so it reaches the admin audit log.
+A user who probes hosts through custom connections therefore leaves nothing an admin can see in Studio.
+
+Found 2026-10-05 by the final review of the platform integration branch.
+Not fixed there: it needs a new audit reason, a security control count change and tests of its own.
+
+**Done when:** the refusal emits `permission_denied` with the reason `custom_connections_disabled`, rate limited like `auditRoleDenial`, with tests and the `security:check` count that follows.
 
 ---
 
