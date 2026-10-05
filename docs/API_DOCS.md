@@ -1953,7 +1953,7 @@ It answers what this server lets a session do with connections of its own:
 { "customConnections": true }
 ```
 
-`customConnections` is `false` when `ALLOW_CUSTOM_CONNECTIONS` is `false`, `0`, `off` or `no`.
+`customConnections` is `false` when `ALLOW_CUSTOM_CONNECTIONS` is `false`, `0`, `off` or `no`, or any value that is not one of those or `true`, `1`, `on` or `yes` (the switch fails closed; one pair of surrounding quotes is stripped first).
 Every database route then refuses a connection supplied in the request body, as `connection` or as the whole body, with `403 { "error": "Custom connections are disabled on this server", "code": "CUSTOM_CONNECTIONS_DISABLED", "statusCode": 403 }`, before any provider is built.
 A seed named by `connectionId`, or by an inline record whose `id` is `seed:<id>`, is unaffected.
 `POST /api/admin/fleet-health` reports such an item as `{ "status": "error", "error": "Custom connections are disabled on this server" }` beside the others.
@@ -2545,7 +2545,7 @@ async function streamAIExplanation(query: string, explainPlan: string) {
 | `USER_PASSWORD` | No | Optional lower-privilege account password; the `user` account exists only when this is set |
 | `USER_EMAIL` | No | Regular-user login email (default `user@libredb.org`, only used when `USER_PASSWORD` is set) |
 | `DB_HTTP_BLOCK_PRIVATE_HOSTS` | No | Off when unset. `true`, `on`, or `1` blocks HTTP database requests to loopback, private, link-local, unique-local and selected special-use addresses; `false`, `off`, or `0` allows them. DNS answers are checked at socket connection time. Invalid values fail closed for HTTP databases. Non-HTTP drivers and SSH tunnel hosts are outside this guard; HTTP connections through an SSH tunnel are refused while it is enabled. |
-| `ALLOW_CUSTOM_CONNECTIONS` | No | On when unset. `false`, `0`, `off` or `no` refuses, with 403, every connection a request supplies that is not a seed, on every route that builds a database provider; see `GET /api/connections/policy` |
+| `ALLOW_CUSTOM_CONNECTIONS` | No | On when unset. `false`, `0`, `off` or `no`, or any unrecognised value (it fails closed and logs an error), refuses, with 403, every connection a request supplies that is not a seed, on every route that builds a database provider; see `GET /api/connections/policy` |
 | `LLM_PROVIDER` | No | AI provider: gemini, openai, ollama, custom |
 | `LLM_API_KEY` | No | AI provider API key |
 | `LLM_MODEL` | No | AI model name |

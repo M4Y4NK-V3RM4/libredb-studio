@@ -49,20 +49,53 @@ describe("customConnectionsAllowed", () => {
     }
   });
 
-  test("an unrecognised value keeps them on and warns once per process, naming the value", () => {
-    const warn = spyOn(logger, "warn").mockImplementation(() => {});
+  test.each([`"false"`, `'off'`, ` "No" `, `" false "`])("%s switches them off once one pair of quotes is stripped", (value) => {
+    process.env.ALLOW_CUSTOM_CONNECTIONS = value;
+
+    expect(customConnectionsAllowed()).toBe(false);
+  });
+
+  test.each([`"true"`, `'1'`, `""`, `''`])("%s keeps them on once one pair of quotes is stripped", (value) => {
+    const error = spyOn(logger, "error").mockImplementation(() => {});
     try {
-      process.env.ALLOW_CUSTOM_CONNECTIONS = "flase";
+      process.env.ALLOW_CUSTOM_CONNECTIONS = value;
 
       expect(customConnectionsAllowed()).toBe(true);
-      expect(customConnectionsAllowed()).toBe(true);
-      expect(warn).toHaveBeenCalledTimes(1);
-      expect(warn).toHaveBeenCalledWith(
-        'Unrecognized ALLOW_CUSTOM_CONNECTIONS value "flase"; custom connections stay allowed (use "false" to disable them)',
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  test.each([`"false'`, `""false""`, `"`, "disabled", "flase"])(
+    "%s is unrecognised and switches them off, failing closed",
+    (value) => {
+      const error = spyOn(logger, "error").mockImplementation(() => {});
+      try {
+        process.env.ALLOW_CUSTOM_CONNECTIONS = value;
+
+        expect(customConnectionsAllowed()).toBe(false);
+      } finally {
+        error.mockRestore();
+      }
+    },
+  );
+
+  test("an unrecognised value logs one error per process, naming the value and the accepted values", () => {
+    const error = spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      process.env.ALLOW_CUSTOM_CONNECTIONS = "disabled";
+
+      expect(customConnectionsAllowed()).toBe(false);
+      expect(customConnectionsAllowed()).toBe(false);
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error).toHaveBeenCalledWith(
+        'Unrecognized ALLOW_CUSTOM_CONNECTIONS value "disabled"; custom connections are switched off. Accepted values: "false", "0", "off" or "no" to switch them off, "true", "1", "on" or "yes" to keep them on',
+        undefined,
         { route: "custom-connections" },
       );
     } finally {
-      warn.mockRestore();
+      error.mockRestore();
     }
   });
 

@@ -92,6 +92,7 @@ libSQL's version probe answers "no version" on a redirect by contract, and Couch
 reports a 3xx as an HTTP failure rather than as a redirect.
 
 **0.7.** The switch is the operator's, and it is on unless the operator turns it off: `ALLOW_CUSTOM_CONNECTIONS` is `true` when unset, so a default deployment behaves as it always has (see "Known limits").
+A value the parser does not recognise fails closed: after one pair of surrounding quotes is stripped, anything that is not `true`, `1`, `on`, `yes`, `false`, `0`, `off` or `no` switches custom connections off and logs an error naming the accepted values, so an operator who meant to switch them off never leaves them open by a typo.
 Switched off, the refusal is made in `resolveConnection`, the one function every database route resolves its connection through, and answers 403 with the code `CUSTOM_CONNECTIONS_DISABLED`, which a client tells apart from the role filter's 403 `AUTH_ERROR`; the admin fleet health check resolves each of its items through it too and reports a refused one as that item's error.
 A seed stays reachable whichever way it is named: by `connectionId`, or as an inline record whose id is `seed:<id>`, which is how an unmanaged seed's editable copy is sent and which the server has always resolved from the seed file, ignoring the copy's own fields.
 The agent runtime and the MCP endpoint never take a connection from the request, so the switch changes nothing there.

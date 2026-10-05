@@ -14,8 +14,10 @@ import { logger } from "@/lib/logger";
  * Read on every call, never cached, so a test or a supervisor that changes the environment is
  * answered at once. Spellings follow the product's other flags: unset or empty is the default
  * (on); "false", "0", "off" and "no", trimmed and in any letter case, switch it off; "true", "1",
- * "on" and "yes" keep it on. Anything else keeps it on and warns once per process, so a typo is
- * visible in the log instead of silently leaving the switch where the operator did not mean it.
+ * "on" and "yes" keep it on. One pair of matching surrounding quotes, single or double, is
+ * stripped first, because an env file can keep them. Anything else FAILS CLOSED: it switches
+ * custom connections off and logs an error once per process naming the accepted values, so an
+ * operator who meant to switch them off never leaves them open by a typo or a stray quote.
  *
  * The rule is enforced in `resolveConnection` (`src/lib/seed/resolve-connection.ts`), the one
  * place an inline connection becomes a provider's input; `GET /api/connections/policy` reports it
@@ -29,27 +31,34 @@ const DISABLED_VALUES = new Set(["false", "0", "off", "no"]);
 const ENABLED_VALUES = new Set(["true", "1", "on", "yes"]);
 
 // resolveConnection runs on every request that carries an inline connection, so an unrecognised
-// value must warn at most once per process rather than once per request.
-let unrecognizedValueWarned = false;
+// value must log at most once per process rather than once per request.
+let unrecognizedValueLogged = false;
 
-/** Test seam: clears the warn-once latch so each case observes a fresh process. */
+/** Test seam: clears the log-once latch so each case observes a fresh process. */
 export function resetCustomConnectionsWarning(): void {
-  unrecognizedValueWarned = false;
+  unrecognizedValueLogged = false;
 }
 
 // One template literal, never a concatenation across lines: bun's line coverage under-counts
 // the continuation lines of a message built that way.
 const unrecognizedValueMessage = (raw: string): string =>
-  `Unrecognized ALLOW_CUSTOM_CONNECTIONS value "${raw}"; custom connections stay allowed (use "false" to disable them)`;
+  `Unrecognized ALLOW_CUSTOM_CONNECTIONS value "${raw}"; custom connections are switched off. Accepted values: "false", "0", "off" or "no" to switch them off, "true", "1", "on" or "yes" to keep them on`;
+
+/** Trims, then strips one pair of matching surrounding quotes, as an env file may keep them. */
+function unquote(raw: string): string {
+  const trimmed = raw.trim();
+  const quoted = /^(["'])([\s\S]*)\1$/.exec(trimmed);
+  return (quoted ? quoted[2] : trimmed).trim().toLowerCase();
+}
 
 export function customConnectionsAllowed(): boolean {
   const raw = process.env.ALLOW_CUSTOM_CONNECTIONS ?? "";
-  const normalized = raw.trim().toLowerCase();
+  const normalized = unquote(raw);
   if (normalized === "" || ENABLED_VALUES.has(normalized)) return true;
   if (DISABLED_VALUES.has(normalized)) return false;
-  if (!unrecognizedValueWarned) {
-    unrecognizedValueWarned = true;
-    logger.warn(unrecognizedValueMessage(raw), { route: "custom-connections" });
+  if (!unrecognizedValueLogged) {
+    unrecognizedValueLogged = true;
+    logger.error(unrecognizedValueMessage(raw), undefined, { route: "custom-connections" });
   }
-  return true;
+  return false;
 }

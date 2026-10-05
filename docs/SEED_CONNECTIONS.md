@@ -568,7 +568,9 @@ Deleting a `managed: false` connection from the sidebar does not simply remove i
 
 `ALLOW_CUSTOM_CONNECTIONS` decides whether a signed-in user may open a connection of their own, one that is not in this file.
 It is on when unset.
-`false`, `0`, `off` or `no`, trimmed and in any letter case, switch it off; `true`, `1`, `on` and `yes` keep it on, and any other value keeps it on and logs one warning naming the value.
+`false`, `0`, `off` or `no`, trimmed and in any letter case, switch it off; `true`, `1`, `on` and `yes` keep it on.
+One pair of matching surrounding quotes, single or double, is stripped first, since an env file can keep them, so `"false"` switches it off.
+Any other value fails closed: it switches custom connections off and logs one error naming the value and the accepted values, so a typo never leaves them open.
 
 Switch it off where Studio shares a network with services its users must not reach, such as a platform's overlay network or a cluster namespace: with custom connections on, any account that can sign in can connect to any host and port that network reaches.
 The switch limits the connections Studio itself opens, not what a seeded engine can reach on its own, for example through Postgres `dblink` or `postgres_fdw`, ClickHouse `remote()` or `url()`, MySQL `FEDERATED` tables or the brokers a Kafka cluster advertises, so grant a seed's account only what its users may reach from that engine.
@@ -995,7 +997,7 @@ This is the standard application logger (`src/lib/logger.ts`), not a persisted a
 |----------|---------|-------------|
 | `SEED_CONFIG_PATH` | `/app/config/seed-connections.yaml` | Path to config file |
 | `SEED_CACHE_TTL_MS` | `60000` | Cache TTL in milliseconds |
-| `ALLOW_CUSTOM_CONNECTIONS` | `true` | `false`, `0`, `off` or `no` refuses every connection that is not a seed; see [Custom Connections](#custom-connections) |
+| `ALLOW_CUSTOM_CONNECTIONS` | `true` | `false`, `0`, `off` or `no` refuses every connection that is not a seed, and so does any unrecognised value; see [Custom Connections](#custom-connections) |
 | `SEED_LITERAL_VALUES` | unset | `true`, `1`, `on` or `yes` (trimmed, any case) reads every seed value as written: no `${ENV_VAR}` or `${vault:...}` reference is resolved and the plaintext-password warning is not logged. `false`, `0`, `off`, `no` or empty keep references resolved, and so does any other value, with one warning ([Literal values written by a platform](#literal-values-written-by-a-platform)) |
 | `SEED_DISCOVERY_PATH` | unset (off) | Path of the discovery export file inside the Studio container; see [Platform discovery (CapRover)](#platform-discovery-caprover) |
 | `SEED_DISCOVERY_MAX_AGE_MS` | `60000` | Age of the export's `generatedAt` after which discovered connections are withdrawn; keep it well above the exporter's `DISCOVERY_INTERVAL_MS` (10000 by default) |
