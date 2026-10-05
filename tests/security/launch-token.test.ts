@@ -120,27 +120,17 @@ describe("a launch token that must not create a session", () => {
   });
 
   test("a token that is unsigned, of another JWT type, signed under another algorithm or under another secret is refused", async () => {
-    const forged = [
-      unsigned(claims()),
-      await sign(claims(), "HS256", SECRET, "JWT"),
-      await sign(claims(), "HS512"),
-      await sign(claims(), "HS256", OTHER_SECRET),
-    ];
-    for (const token of forged) {
-      expect((await launch(token)).status).toBe(401);
-    }
+    expect((await launch(unsigned(claims()))).status).toBe(401);
+    expect((await launch(await sign(claims(), "HS256", SECRET, "JWT"))).status).toBe(401);
+    expect((await launch(await sign(claims(), "HS512"))).status).toBe(401);
+    expect((await launch(await sign(claims(), "HS256", OTHER_SECRET))).status).toBe(401);
     expect(cookieJar.get("auth-token")).toBeUndefined();
   });
 
   test("a token for another Studio, from another issuer or living longer than 60 seconds is refused", async () => {
-    const misdirected = [
-      await sign(claims({ aud: "studio-2" })),
-      await sign(claims({ iss: "someone-else" })),
-      await sign(claims({ exp: Math.floor(Date.now() / 1000) + 3600 })),
-    ];
-    for (const token of misdirected) {
-      expect((await launch(token)).status).toBe(401);
-    }
+    expect((await launch(await sign(claims({ aud: "studio-2" })))).status).toBe(401);
+    expect((await launch(await sign(claims({ iss: "someone-else" })))).status).toBe(401);
+    expect((await launch(await sign(claims({ exp: Math.floor(Date.now() / 1000) + 3600 })))).status).toBe(401);
     expect(cookieJar.get("auth-token")).toBeUndefined();
   });
 
