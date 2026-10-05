@@ -6,6 +6,7 @@ import { SignJWT } from "jose";
 import { config, proxy } from "@/proxy";
 import { AGENT_DRIVE_HEADER, AGENT_DRIVE_PATH, mintAgentDriveToken } from "@/lib/agent/drive-token";
 import { clearRateLimitState } from "@/lib/api/rate-limit";
+import { resetLaunchConfigWarning } from "@/lib/launch/config";
 
 // ─── JWT helpers ────────────────────────────────────────────────────────────
 
@@ -117,12 +118,42 @@ describe("proxy", () => {
 
         expect(res.status).toBe(503);
         expect(await res.text()).toBe("Launch sign-in is not available when NEXT_PUBLIC_AUTH_PROVIDER=oidc.");
+        expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
         expect(res.headers.get("cache-control")).toBe("no-store");
         expect(res.headers.get("x-frame-options")).toBe("DENY");
       } finally {
         if (saved === undefined) delete process.env.NEXT_PUBLIC_AUTH_PROVIDER;
         else process.env.NEXT_PUBLIC_AUTH_PROVIDER = saved;
         errorSpy.mockRestore();
+        resetLaunchConfigWarning();
+      }
+    });
+
+    test("/launch answers 503 with the problem while the launch configuration is broken", async () => {
+      const names = ["LAUNCH_TOKEN_SECRET", "LAUNCH_TOKEN_AUDIENCE", "LAUNCH_TOKEN_ISSUER"] as const;
+      const saved = names.map((name) => process.env[name]);
+      process.env.LAUNCH_TOKEN_SECRET = "too-short";
+      process.env.LAUNCH_TOKEN_AUDIENCE = "studio-1";
+      process.env.LAUNCH_TOKEN_ISSUER = "platform";
+      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const res = await proxy(createNextRequest("/launch"));
+
+        expect(res.status).toBe(503);
+        expect(await res.text()).toBe(
+          "LAUNCH_TOKEN_SECRET must be at least 32 characters: launch sign-in is unavailable until it is fixed.",
+        );
+        expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        expect(res.headers.get("x-frame-options")).toBe("DENY");
+      } finally {
+        names.forEach((name, index) => {
+          const value = saved[index];
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        });
+        errorSpy.mockRestore();
+        resetLaunchConfigWarning();
       }
     });
   });
