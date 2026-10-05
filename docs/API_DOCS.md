@@ -83,7 +83,7 @@ LibreDB Studio uses JWT (JSON Web Tokens) for authentication. Tokens are stored 
 The middleware (`src/proxy.ts`) gates every route: all of them require a valid `auth-token` cookie **except** the routes below. It is an optimisation rather than the authorization boundary, though — every handler that reaches a database or a model provider verifies the session again itself, through `guardRoute` (`src/lib/api/require-session.ts`), which is also where the rate-limit bucket and the audit line come from.
 
 - `/api/auth/*`: login, logout, me, OIDC login/callback, `POST /api/auth/passkey/sign-in` and `POST /api/auth/launch`, which create the session and so cannot need one; the other auth routes that act on an account (`/api/auth/totp`, `/api/auth/passkey`) check the session themselves
-- `/launch`: the page a platform's launch link opens; it posts the token from its URL fragment to `POST /api/auth/launch` ([LAUNCH.md](./LAUNCH.md))
+- `/launch`: the page a platform's launch link opens; it posts the token from its URL fragment to `POST /api/auth/launch`, after a Continue click when the browser has no session ([LAUNCH.md](./LAUNCH.md))
 - `/health` and `/api/health` — liveness, fully public, no dependencies
 - `/api/db/health` — excluded from the middleware for **both** methods; `GET` is fully public and answers the same as the two above, while `POST` performs its own session check and returns JSON `401` if unauthenticated
 - `GET /api/storage/config` — storage-mode discovery (returns `{ provider, serverMode }`, no user data)
@@ -278,7 +278,7 @@ Each refusal and each malformed body spends one unit of the `passkey_client` bud
 #### POST /api/auth/launch
 
 Exchanges a platform launch token for a session; no session is needed ([LAUNCH.md](./LAUNCH.md)).
-The `/launch` page posts it with the token from its URL fragment.
+The `/launch` page posts it with the token from its URL fragment: at once when the browser holds a session, and otherwise only after the person clicks Continue on a page that names the account the token signs into.
 With local sign-in the route exists only while `LAUNCH_TOKEN_SECRET` is set; under `NEXT_PUBLIC_AUTH_PROVIDER=oidc` it answers `503`.
 
 **Request:**

@@ -16,6 +16,38 @@ export function readLaunchToken(hash: string): string | null {
   return new URLSearchParams(hash.replace(/^#/, "")).get("token") || null;
 }
 
+/**
+ * The `email` claim of a compact JWS, decoded for display only: nothing here checks the signature, the
+ * issuer or the expiry, and the route verifies all of them before it signs anyone in. Null when the token
+ * carries no readable email, which no token the route would accept does.
+ */
+export function readLaunchEmail(token: string): string | null {
+  const payload = token.split(".")[1];
+  if (payload === undefined) return null;
+  try {
+    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+    const claims: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    const email = typeof claims === "object" && claims !== null ? (claims as { email?: unknown }).email : undefined;
+    return typeof email === "string" && email !== "" ? email : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether this browser holds a Studio session, asked of GET /api/auth/me, which reads the session the way the
+ * launch route does. Null when Studio could not be reached.
+ */
+async function hasSession(): Promise<boolean | null> {
+  try {
+    const response = await appFetch("/api/auth/me");
+    return response.ok;
+  } catch {
+    return null;
+  }
+}
+
 interface LaunchAnswer {
   success?: boolean;
   redirect?: unknown;
@@ -56,6 +88,18 @@ async function exchange(token: string): Promise<Outcome> {
     return { conflict: { signedInAs: body.signedInAs, launchFor: body.launchFor } };
   }
   return { failure: body.message || body.error || REFUSED };
+}
+
+/** Exchanges the token, then replaces this page with the editor or shows what the route answered. */
+async function finish(
+  token: string,
+  onConflict: (conflict: Conflict) => void,
+  onFailure: (failure: string) => void,
+): Promise<void> {
+  const outcome = await exchange(token);
+  if ("redirect" in outcome) window.location.replace(withBasePath(outcome.redirect));
+  else if ("conflict" in outcome) onConflict(outcome.conflict);
+  else onFailure(outcome.failure);
 }
 
 /**
@@ -109,14 +153,18 @@ function SessionConflict({ signedInAs, launchFor }: Conflict) {
 }
 
 /**
- * Reads the launch token from the fragment, removes it from the address bar and the history entry before
- * anything else happens, exchanges it, and replaces this page with the editor. The ref keeps the exchange to
- * one per page load: the token is single use, and React's development double effect would otherwise spend it
- * and then report the second exchange as a replay.
+ * Reads the launch token from the fragment and removes it from the address bar and the history entry before
+ * anything else happens. A browser with a Studio session exchanges it at once, so the route can refuse to
+ * replace a session for another account (the 409 above). A browser with none names the account the link
+ * signs into and exchanges the token only on a click (docs/LAUNCH.md): a link someone else minted for their
+ * own account, sent to a person with no session, would otherwise sign that person in as them without a word.
+ * The ref keeps the session check to one per page load: the token is single use, and React's development
+ * double effect would otherwise run it twice.
  */
 export default function LaunchClient() {
   const [failure, setFailure] = useState<string | null>(null);
   const [conflict, setConflict] = useState<Conflict | null>(null);
+  const [confirm, setConfirm] = useState<{ token: string; email: string } | null>(null);
   const started = useRef(false);
 
   useEffect(() => {
@@ -125,18 +173,40 @@ export default function LaunchClient() {
     const token = readLaunchToken(window.location.hash);
     window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     void (async () => {
-      const outcome: Outcome = token === null ? { failure: NO_TOKEN } : await exchange(token);
-      if ("redirect" in outcome) window.location.replace(withBasePath(outcome.redirect));
-      else if ("conflict" in outcome) setConflict(outcome.conflict);
-      else setFailure(outcome.failure);
+      if (token === null) return setFailure(NO_TOKEN);
+      const session = await hasSession();
+      if (session === null) return setFailure(UNREACHABLE);
+      if (session) return finish(token, setConflict, setFailure);
+      const email = readLaunchEmail(token);
+      if (email === null) return setFailure(REFUSED);
+      setConfirm({ token, email });
     })();
   }, []);
+
+  function proceed(token: string) {
+    setConfirm(null);
+    void finish(token, setConflict, setFailure);
+  }
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-surface text-fg">
       <div className="max-w-md px-6 text-center" aria-live="polite">
         {conflict !== null ? (
           <SessionConflict {...conflict} />
+        ) : confirm !== null ? (
+          <>
+            <h1 className="mb-2 text-xl font-semibold">Sign in to LibreDB Studio</h1>
+            <p className="mb-6 text-sm text-fg-tertiary">
+              {`This launch link signs you in to LibreDB Studio as ${confirm.email}.`}
+            </p>
+            <button
+              type="button"
+              onClick={() => proceed(confirm.token)}
+              className="rounded-lg bg-brand-solid px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-brand-solid-active"
+            >
+              {`Continue as ${confirm.email}`}
+            </button>
+          </>
         ) : failure === null ? (
           <p className="text-sm text-fg-tertiary">Signing you in to LibreDB Studio...</p>
         ) : (

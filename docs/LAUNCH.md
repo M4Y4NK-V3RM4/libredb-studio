@@ -56,7 +56,10 @@ https://studio.example.com/launch#token=<token>
 ```
 
 The token rides in the URL fragment, which a browser never sends to a server, so it reaches no access log, no reverse-proxy log and no `Referer` header.
-The `/launch` page reads the fragment, removes it from the address bar and the history entry, and posts the token as JSON to `POST /api/auth/launch` on its own origin.
+The `/launch` page reads the fragment and removes it from the address bar and the history entry, then asks `GET /api/auth/me` whether the browser holds a Studio session.
+With no session, the page names the account the link signs into, the `email` claim it reads from the token for display only, and posts the token only after the person clicks **Continue as <email>**: a link someone else minted for their own account then cannot sign you in as them without your seeing whose account it is.
+With a session, it posts the token at once, so the route can refuse a link for another account (below).
+Either way it posts the token as JSON to `POST /api/auth/launch` on its own origin, and the route alone decides; a token whose payload carries no readable email is refused on the page without being posted.
 On success it replaces itself with the editor; on a refusal it shows the reason and a link to the password sign-in.
 When the browser is already signed in to Studio as another account, the page names both accounts and offers to sign out; the link is used up either way, so continuing as the other account takes a fresh launch from the platform.
 Under a build-time `BASE_PATH` the page is at `<BASE_PATH>/launch`.
@@ -217,8 +220,9 @@ The token itself is never logged or recorded.
 
 - It moves trust to the platform: whoever can make the platform mint a token signs in to Studio with the role the token names, without Studio's password or authenticator code.
   Keep `LAUNCH_TOKEN_SECRET` as secret as `JWT_SECRET`.
-- A launch link signs in whoever opens it within its minute, as the person it names.
-  A browser that is already signed in to Studio as someone else refuses the link and keeps its session, but a browser with no session is signed in: a link someone else sends you then signs you in as them, and what you save in Studio is saved to their account.
+- A launch link signs in whoever opens it within its minute, as the person it names, once they click Continue in a browser with no Studio session.
+  A browser that is already signed in to Studio as someone else refuses the link and keeps its session.
+  A browser with no session shows the account the link signs into and signs in only when the person clicks **Continue as <email>**, so a link someone else sends you no longer signs you in as them without a word; a person who clicks Continue for an email that is not their own is still signed in as that account, and what they save in Studio is saved to it.
 - A token is single use per Studio process.
   With more than one replica each process remembers only the tokens it accepted, so a copied token could sign in once per replica within its minute.
 - The session cookie is the same one a password sign-in sets, so `AUTH_COOKIE_SECURE` applies unchanged: on a plain-HTTP address the cookie travels unencrypted, and so does the token in the page's POST body.
