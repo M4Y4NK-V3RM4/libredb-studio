@@ -122,6 +122,7 @@ function launchToken(input: { email: string; role: "admin" | "user"; userId: str
 ```
 
 Mint the token when the person clicks, not when the page that shows the button renders: it is valid for one minute.
+Rate-limit minting per user on the platform: every launch a Studio process accepts holds one of its 4096 replay slots for about a minute, and all users share those slots, so one account or script minting in a loop can make launch sign-in answer `503` for everyone (see [The token](#the-token)).
 
 ## Accounts
 
