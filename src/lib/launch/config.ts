@@ -4,10 +4,10 @@
  *
  * The feature is off unless LAUNCH_TOKEN_SECRET is set, and a set secret makes LAUNCH_TOKEN_AUDIENCE
  * and LAUNCH_TOKEN_ISSUER required. A configuration that breaks a rule is reported and never fatal:
- * the launch route answers 503 with the problem and this module logs each distinct problem once per
- * process, so the log line cannot be multiplied by an anonymous caller. A boot-time exit like the one
- * a short JWT_SECRET earns would take the whole Studio down over a feature most deployments never
- * turn on.
+ * the launch route answers 503 with the problem and this module logs a problem once, until a
+ * different problem replaces it, so the log line cannot be multiplied by an anonymous caller. A
+ * boot-time exit like the one a short JWT_SECRET earns would take the whole Studio down over a feature
+ * most deployments never turn on.
  *
  * Under NEXT_PUBLIC_AUTH_PROVIDER=oidc launch sign-in is unavailable whatever the three variables say:
  * storedAccountAllows passes every session in that mode without reading the registry, so a disable or a
@@ -19,11 +19,11 @@
  * signs with, so trimming here would verify against a key the platform never used. A problem names
  * the variable and the rule it broke and never quotes a value.
  *
- * A secret equal to the key that signs sessions is refused (Spec B F12): the session check verifies
- * an auth-token with that key and pins neither typ nor algorithm, so a launch token would pass as a
- * session. The key is JWT_SECRET, or the development fallback getJwtSecret uses while it is unset.
- * It is compared here without calling getJwtSecret, which warns on every call under the fallback and
- * throws in production when JWT_SECRET is missing; sign-in reports that itself.
+ * A secret equal to the key that signs sessions is refused (docs/LAUNCH.md, Configuration): the
+ * session check verifies an auth-token with that key and pins neither typ nor algorithm, so a launch
+ * token would pass as a session. The key is JWT_SECRET, or the development fallback getJwtSecret
+ * uses while it is unset. It is compared here without calling getJwtSecret, which warns on every call
+ * under the fallback and throws in production when JWT_SECRET is missing; sign-in reports that itself.
  */
 import { DEV_FALLBACK_SECRET } from "@/lib/config/auth-env";
 import { logger } from "@/lib/logger";

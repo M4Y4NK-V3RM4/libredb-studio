@@ -104,7 +104,8 @@ describe("readLaunchConfig", () => {
       configure(SECRET);
       expect(readLaunchConfig()).toEqual({ state: "misconfigured", problem: SESSION_KEY_PROBLEM } as const);
     } finally {
-      process.env.JWT_SECRET = jwtSecret;
+      if (jwtSecret === undefined) delete process.env.JWT_SECRET;
+      else process.env.JWT_SECRET = jwtSecret;
     }
   });
 
@@ -117,7 +118,8 @@ describe("readLaunchConfig", () => {
       configure(SECRET);
       expect(readLaunchConfig().state).toBe("ready");
     } finally {
-      process.env.JWT_SECRET = jwtSecret;
+      if (jwtSecret === undefined) delete process.env.JWT_SECRET;
+      else process.env.JWT_SECRET = jwtSecret;
     }
   });
 
