@@ -259,6 +259,20 @@ describe("provisionLaunchAccount in the server store", () => {
     expect((await provider.getAccount(MEMBER))?.role).toBe("user");
   });
 
+  test("checks the identity binding before the disabled flag, so only the bound person learns the account is disabled", async () => {
+    await provisionLaunchAccount(launch());
+    const provider = await fixture.provider();
+    const current = await provider.getAccount(MEMBER);
+    if (!current) throw new Error("the launched account is missing");
+    await provider.updateAccount(
+      { ...current, disabled: true, sessionVersion: current.sessionVersion + 1, updatedAt: new Date().toISOString() },
+      { expected: current },
+    );
+    await expectNotLinked(launch({ subject: "platform-user-2" }));
+    await expectNotLinked(launch({ issuer: "another-platform", subject: "platform-user-2" }));
+    expect((await provider.getAccount(MEMBER))?.disabled).toBe(true);
+  });
+
   test("answers 409 when the account changed between the read and the role write", async () => {
     await provisionLaunchAccount(launch());
     const provider = await fixture.provider();
