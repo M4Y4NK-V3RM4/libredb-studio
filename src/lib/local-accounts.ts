@@ -101,7 +101,8 @@ function readRole(value: unknown): Role {
   return value;
 }
 
-function sameEmail(a: string, b: string): boolean {
+/** An account's email, its username, is matched without regard to case on every sign-in path. */
+export function sameEmail(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
 

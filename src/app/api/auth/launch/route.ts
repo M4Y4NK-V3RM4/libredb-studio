@@ -10,7 +10,7 @@ import { AuthConfigError } from "@/lib/auth-errors";
 import { isRecord } from "@/lib/is-record";
 import { readLaunchConfig } from "@/lib/launch/config";
 import { type LaunchClaims, LaunchTokenError, verifyLaunchToken } from "@/lib/launch/verify";
-import { AccountError, provisionLaunchAccount } from "@/lib/local-accounts";
+import { AccountError, provisionLaunchAccount, sameEmail } from "@/lib/local-accounts";
 import { logger } from "@/lib/logger";
 
 export const dynamic = "force-dynamic";
@@ -62,11 +62,6 @@ function redirectFor(claims: LaunchClaims): string {
   return claims.conn === undefined ? "/" : `/?connection=${encodeURIComponent(`seed:${claims.conn}`)}`;
 }
 
-/** Usernames are emails, and an account is matched without regard to case on every sign-in path. */
-function sameUsername(a: string, b: string): boolean {
-  return a.toLowerCase() === b.toLowerCase();
-}
-
 function sessionConflict(current: string, incoming: string): string {
   return `This browser is already signed in to Studio as ${current}, and this launch link is for ${incoming}. Sign out, then open Studio again from the platform to continue as ${incoming}.`;
 }
@@ -106,7 +101,7 @@ export async function POST(request: Request) {
     // all the same, so continuing as the other account takes a sign-out and a fresh launch. Checked before
     // provisioning, so a refused swap creates no account and changes no role.
     const current = await getSession();
-    if (current && !sameUsername(current.username, claims.email)) {
+    if (current && !sameEmail(current.username, claims.email)) {
       return refuse(409, sessionConflict(current.username, claims.email), claims.email, "launch_session_conflict", ip, {
         signedInAs: current.username,
         launchFor: claims.email,
