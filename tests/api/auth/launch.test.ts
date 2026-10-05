@@ -81,6 +81,18 @@ async function send(body: unknown, ip: string, raw?: string): Promise<Response> 
   return response;
 }
 
+async function expectInvalidBody(body: unknown): Promise<void> {
+  const response = await send(body, freshAddress());
+  expect(response.status).toBe(400);
+  expect((await response.json()).message).toBe("Invalid request body");
+}
+
+async function expectNotLinked(token: string): Promise<void> {
+  const response = await send({ token }, freshAddress());
+  expect(response.status).toBe(403);
+  expect(await response.json()).toEqual({ success: false, message: NOT_LINKED });
+}
+
 function routeEvents() {
   return getServerAuditBuffer()
     .getAll()
@@ -140,7 +152,8 @@ describe("POST /api/auth/launch configuration", () => {
           "LAUNCH_TOKEN_SECRET must differ from the key that signs sessions (JWT_SECRET): launch sign-in is unavailable until it does.",
       });
     } finally {
-      process.env.JWT_SECRET = jwtSecret;
+      if (jwtSecret === undefined) delete process.env.JWT_SECRET;
+      else process.env.JWT_SECRET = jwtSecret;
     }
     expect(cookieJar.get("auth-token")).toBeUndefined();
     expect(routeEvents()).toEqual([]);
@@ -175,11 +188,10 @@ describe("POST /api/auth/launch with a malformed body", () => {
   });
 
   test("answers 400 for a body without a non-empty string token", async () => {
-    for (const body of [{}, { token: "" }, { token: 42 }, ["token"]]) {
-      const response = await send(body, freshAddress());
-      expect(response.status).toBe(400);
-      expect((await response.json()).message).toBe("Invalid request body");
-    }
+    await expectInvalidBody({});
+    await expectInvalidBody({ token: "" });
+    await expectInvalidBody({ token: 42 });
+    await expectInvalidBody(["token"]);
   });
 
   test("answers 413 for a body over 8192 bytes", async () => {
@@ -276,10 +288,12 @@ describe("POST /api/auth/launch signs in", () => {
   test("a success clears the address's failures", async () => {
     const ip = freshAddress();
     for (let attempt = 0; attempt < 4; attempt += 1) {
+      // oxlint-disable-next-line no-await-in-loop -- the limiter counts refusals one by one, so each must land before the next.
       expect((await send({ token: await mint({ aud: "studio-2" }) }, ip)).status).toBe(401);
     }
     expect((await send({ token: await mint() }, ip)).status).toBe(200);
     for (let attempt = 0; attempt < 5; attempt += 1) {
+      // oxlint-disable-next-line no-await-in-loop -- the limiter counts refusals one by one, so each must land before the next.
       expect((await send({ token: await mint({ aud: "studio-2" }) }, ip)).status).toBe(401);
     }
   });
@@ -289,6 +303,7 @@ describe("POST /api/auth/launch budget", () => {
   test("the sixth refusal from one address within the window answers 429 before the body is read", async () => {
     const ip = freshAddress();
     for (let attempt = 0; attempt < 5; attempt += 1) {
+      // oxlint-disable-next-line no-await-in-loop -- the limiter counts refusals one by one, so each must land before the next.
       expect((await send({ token: await mint({ aud: "studio-2" }) }, ip)).status).toBe(401);
     }
     const token = await mint();
@@ -357,11 +372,8 @@ describe("POST /api/auth/launch in the server store", () => {
   test("refuses an account that signs in with a password, the environment admin included, with 403", async () => {
     await requireAccountStore();
     await fixture.createAccount({ email: MEMBER, password: MEMBER_PASSWORD, role: "user" });
-    for (const token of [await mint(), await mint({ email: "admin@libredb.org", role: "admin" })]) {
-      const response = await send({ token }, freshAddress());
-      expect(response.status).toBe(403);
-      expect(await response.json()).toEqual({ success: false, message: NOT_LINKED });
-    }
+    await expectNotLinked(await mint());
+    await expectNotLinked(await mint({ email: "admin@libredb.org", role: "admin" }));
     expect(cookieJar.get("auth-token")).toBeUndefined();
     expect(routeEvents()).toEqual([
       expect.objectContaining({ type: "login_failure", user: MEMBER, reason: "launch_identity_mismatch" }),
@@ -492,7 +504,8 @@ describe("POST /api/auth/launch server faults", () => {
       expect(response.status).toBe(503);
       expect((await response.json()).message).toContain("JWT_SECRET is too short");
     } finally {
-      process.env.JWT_SECRET = jwtSecret;
+      if (jwtSecret === undefined) delete process.env.JWT_SECRET;
+      else process.env.JWT_SECRET = jwtSecret;
       errorSpy.mockRestore();
     }
   });
