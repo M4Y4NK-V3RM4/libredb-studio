@@ -49,11 +49,14 @@ describe("customConnectionsAllowed", () => {
     }
   });
 
-  test.each([`"false"`, `'off'`, ` "No" `, `" false "`])("%s switches them off once one pair of quotes is stripped", (value) => {
-    process.env.ALLOW_CUSTOM_CONNECTIONS = value;
+  test.each([`"false"`, `'off'`, ` "No" `, `" false "`])(
+    "%s switches them off once one pair of quotes is stripped",
+    (value) => {
+      process.env.ALLOW_CUSTOM_CONNECTIONS = value;
 
-    expect(customConnectionsAllowed()).toBe(false);
-  });
+      expect(customConnectionsAllowed()).toBe(false);
+    },
+  );
 
   test.each([`"true"`, `'1'`, `""`, `''`])("%s keeps them on once one pair of quotes is stripped", (value) => {
     const error = spyOn(logger, "error").mockImplementation(() => {});
