@@ -4496,6 +4496,10 @@ The comments in `playwright.config.ts` and `e2e/offline-editor.spec.ts` record t
 Found while running every local gate for the etcd provider (#1089).
 Not fixed there: the E2E harness is not part of the etcd work, and the fix is a choice about the limiter's test configuration.
 
+Amended 2026-10-05: a functional smoke run without retries on 2026-10-05 failed `object-edit.spec.ts:621` on the same budget, and the wait it failed in has a cause of its own.
+`waitForTheObjectTree` in `e2e/object-edit.spec.ts` (around line 258) clicks only `tree-retry`, while a rate-limited metadata read draws the sidebar's `sidebar-provider-retry` (`src/components/sidebar/Sidebar.tsx`) instead, so a rate-limited run presses no retry and waits out the helper's 120 s before the test fails.
+The same test passed on a retry with CI's `--retries=2`.
+
 **Done when:** the E2E servers get a query budget sized for the suite, through `RATE_LIMIT_QUERY_MAX` in their `webServer` env as the passkey server sets `RATE_LIMIT_LOGIN_MAX`, or each spec signs in as an account of its own, and the repeated command above passes all 40 of its runs locally.
 
 ### REL8. Local drafts fail typecheck, lint and build, because two configs read every file on disk
