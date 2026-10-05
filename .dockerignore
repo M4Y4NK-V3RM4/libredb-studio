@@ -31,6 +31,9 @@ charts
 # Test and automation trees
 e2e
 tests
+# The Playwright configs import e2e helpers, and next build type-checks every
+# .ts the context keeps, so a config left in would fail the image build.
+playwright*.config.ts
 playwright-report
 test-results
 data-e2e-offline
