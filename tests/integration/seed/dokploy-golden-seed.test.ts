@@ -108,7 +108,7 @@ describe("what Studio makes of the golden seed file", () => {
     expect(listed.map((conn) => conn.seedId)).toEqual(SEED_IDS);
   });
 
-  it("gives each engine the fields it authenticates with, and no field it does not take", async () => {
+  it("gives each engine its type, host, port, database, user, password and authSource, with the ones it does not take left unset", async () => {
     const bySeedId = new Map((await getManagedConnections(["admin"])).map((conn) => [conn.seedId, conn]));
 
     expect(addressOf(bySeedId.get("dokploy-postgres-f298d8acf10d"))).toEqual({
