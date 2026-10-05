@@ -82,7 +82,8 @@ LibreDB Studio uses JWT (JSON Web Tokens) for authentication. Tokens are stored 
 
 The middleware (`src/proxy.ts`) gates every route: all of them require a valid `auth-token` cookie **except** the routes below. It is an optimisation rather than the authorization boundary, though — every handler that reaches a database or a model provider verifies the session again itself, through `guardRoute` (`src/lib/api/require-session.ts`), which is also where the rate-limit bucket and the audit line come from.
 
-- `/api/auth/*`: login, logout, me, OIDC login/callback, and `POST /api/auth/passkey/sign-in`, which creates the session and so cannot need one; the other auth routes that act on an account (`/api/auth/totp`, `/api/auth/passkey`) check the session themselves
+- `/api/auth/*`: login, logout, me, OIDC login/callback, `POST /api/auth/passkey/sign-in` and `POST /api/auth/launch`, which create the session and so cannot need one; the other auth routes that act on an account (`/api/auth/totp`, `/api/auth/passkey`) check the session themselves
+- `/launch`: the page a platform's launch link opens; it posts the token from its URL fragment to `POST /api/auth/launch` ([LAUNCH.md](./LAUNCH.md))
 - `/health` and `/api/health` — liveness, fully public, no dependencies
 - `/api/db/health` — excluded from the middleware for **both** methods; `GET` is fully public and answers the same as the two above, while `POST` performs its own session check and returns JSON `401` if unauthenticated
 - `GET /api/storage/config` — storage-mode discovery (returns `{ provider, serverMode }`, no user data)
@@ -273,6 +274,33 @@ Every refusal answers the same `401 { "success": false, "message": "That passkey
 A malformed body is `400 { "success": false, "message": "Invalid request body" }`, an unknown action the same `400`, and a body over 65536 bytes `413 { "success": false, "message": "Request body is too large" }`.
 `409 { "success": false, "message": "<reason>" }` under OIDC, with `STORAGE_PROVIDER=local` or while `PASSKEY_ORIGIN` is unset, and `503` with the problem while it is invalid.
 Each refusal and each malformed body spends one unit of the `passkey_client` budget, which is checked before the body is read, so `429` follows once it is spent; see [Rate Limiting](#rate-limiting).
+
+#### POST /api/auth/launch
+
+Exchanges a platform launch token for a session; no session is needed ([LAUNCH.md](./LAUNCH.md)).
+The `/launch` page posts it with the token from its URL fragment.
+With local sign-in the route exists only while `LAUNCH_TOKEN_SECRET` is set; under `NEXT_PUBLIC_AUTH_PROVIDER=oidc` it answers `503`.
+
+**Request:**
+```json
+{ "token": "<compact JWS>" }
+```
+
+| Status | Body | When |
+|---|---|---|
+| `200` | `{ "success": true, "redirect": "/" }` or `{ "success": true, "redirect": "/?connection=seed%3A<conn>" }` | The token verified; the session cookie is set |
+| `400` | `{ "success": false, "message": "Invalid request body" }` | The body is not JSON or carries no non-empty string `token` |
+| `401` | `{ "success": false, "message": "<reason>" }` | The token is refused, or its account is disabled |
+| `403` | `{ "success": false, "message": "<reason>" }` | The email is `ADMIN_EMAIL`, or with `STORAGE_PROVIDER=local` `USER_EMAIL` while `USER_PASSWORD` is set; in the server store, the account has a password, an authenticator or a passkey, or a launch created it for another `iss` or `sub` |
+| `404` | `{ "success": false, "message": "Launch sign-in is not enabled on this server." }` | `LAUNCH_TOKEN_SECRET` is unset or empty and `NEXT_PUBLIC_AUTH_PROVIDER` is not `oidc` |
+| `409` | `{ "success": false, "message": "<reason>", "signedInAs": "<current username>", "launchFor": "<token email>" }` | The browser holds a valid session for another account; that session stays and the token is spent |
+| `409` | `{ "success": false, "message": "<reason>" }` | The role change would demote the last enabled admin, or crossed another change to the account |
+| `413` | `{ "success": false, "message": "Request body is too large" }` | The body is over 8192 bytes |
+| `503` | `{ "success": false, "message": "<problem>" }` | `NEXT_PUBLIC_AUTH_PROVIDER=oidc` (`Launch sign-in is not available when NEXT_PUBLIC_AUTH_PROVIDER=oidc.`), the launch variables are misconfigured, the server cannot sign sessions, or more launches arrived in the last minute than the process can remember |
+
+Every answer carries `Cache-Control: no-store`.
+The `401` messages name the refusal (expired, already used, issued for a different Studio, not signed for this Studio, and the rest), and the audit log records one reason per refusal; [LAUNCH.md](./LAUNCH.md#audit) lists them.
+Each refusal and each malformed body spends one unit of the `login_client` budget, which is checked before the body is read, so `429` follows once it is spent; see [Rate Limiting](#rate-limiting).
 
 ---
 
@@ -2284,6 +2312,12 @@ A wrong password or code on `POST /api/auth/totp`, and on the `register-options`
 It is checked before the body is read, for both actions, and every refused assertion, malformed body or unknown action spends one unit; a success clears nothing.
 Passkey sign-in never spends the login budgets, so failed passkeys cannot lock an address out of password sign-in.
 A signature cannot be guessed, so this budget bounds CPU, database reads and audit volume rather than guessing.
+
+### Launch sign-in
+
+`POST /api/auth/launch` spends the password sign-in's per-address budget, `login_client` (`RATE_LIMIT_LOGIN_MAX`, `RATE_LIMIT_LOGIN_WINDOW_SEC`).
+It is checked before the body is read, every refused token, refused account, refused session swap or malformed body spends one unit, and a successful launch clears the address's failures.
+A launch never spends or clears the per-account budget, because it is not a password guess.
 
 ### Every session-guarded route
 

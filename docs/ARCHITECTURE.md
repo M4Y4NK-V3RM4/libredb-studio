@@ -213,6 +213,10 @@ sequenceDiagram
         U->>F: Unlock passkey on the device
         F->>A: POST /api/auth/passkey/sign-in {verify}
         A->>F: Set HTTP-Only JWT Cookie
+    else Platform launch
+        U->>F: Open the platform's launch link, token in the URL fragment
+        F->>A: POST /api/auth/launch {token}
+        A->>F: Set HTTP-Only JWT Cookie
     else OIDC SSO
         U->>F: Click SSO Login
         F->>O: Redirect (PKCE)
@@ -226,6 +230,11 @@ sequenceDiagram
 Controlled by `NEXT_PUBLIC_AUTH_PROVIDER` (`local` | `oidc`). Every flow results in the same JWT session cookie. Proxy (`src/proxy.ts`) enforces RBAC (admin vs user roles).
 
 The passkey branch exists only with local auth, `STORAGE_PROVIDER=sqlite` or `postgres`, and a valid `PASSKEY_ORIGIN`. The challenge travels in an HttpOnly, SameSite=Strict cookie signed with a key derived from `JWT_SECRET`, the verify step checks the assertion against the one configured origin and the credential stored in the server store, and marks the challenge spent in the same transaction that records the sign-in, so any replica completes it at most once. A verified passkey replaces the password and the TOTP code, because both ceremonies require user verification. See [PASSKEYS.md](PASSKEYS.md).
+
+The launch branch exists only while `LAUNCH_TOKEN_SECRET` is set.
+The `/launch` page reads an HS256 token from its URL fragment, removes it from the address bar and posts it to `POST /api/auth/launch`, which verifies it against the configured issuer and audience, refuses a token issued for more than 60 seconds or presented twice, refuses to replace a session for another account, and in store mode creates or updates an account bound to the token's issuer and subject before it sets the session cookie; it never signs in to an account that has a password.
+Under `NEXT_PUBLIC_AUTH_PROVIDER=oidc` the route and the page answer 503.
+See [LAUNCH.md](LAUNCH.md).
 
 ### 4.3. Multi-Statement Execution
 
@@ -368,6 +377,8 @@ src/
     ├── mcp/                 # MCP server: SDK handler, token, pre-processing, tools (docs/MCP.md)
     ├── passkey/             # Passkey sign-in (docs/PASSKEYS.md): config (PASSKEY_ORIGIN reader), policy, ceremony
     │                        #   cookie, WebAuthn wrapper, management and sign-in services, browser client
+    ├── launch/              # Launch-token sign-in (docs/LAUNCH.md): config (LAUNCH_TOKEN_* reader), the token
+    │                        #   verifier (jose, HS256 pinned) and the in-process jti replay cache
     ├── llm/                 # LLM provider module
     ├── editor/              # Monaco completions (SQL + MongoDB), the tab-type/language ladder, the
     │                       # editor registry (dialect-editors.ts), the LibreDB, Redis, etcd and Oxia command languages, Cypher, InfluxQL, and the Milvus and Qdrant console languages
