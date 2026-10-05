@@ -90,6 +90,41 @@ describe("proxy", () => {
 
       expect(isRedirect(res)).toBe(false);
     });
+
+    // The launch page creates the session, so a visitor without one must reach it, and a visitor who
+    // already has one must reach it too, so the launch route can refresh the same account or answer 409
+    // for another one.
+    test("/launch passes through without redirect, with or without a session", async () => {
+      expect(isRedirect(await proxy(createNextRequest("/launch")))).toBe(false);
+      expect(isRedirect(await proxy(createNextRequest("/launch", await createToken("user"))))).toBe(false);
+    });
+
+    test("/launch carries the document security headers", async () => {
+      const res = await proxy(createNextRequest("/launch"));
+
+      expect(res.headers.get("x-frame-options")).toBe("DENY");
+      expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    });
+
+    // Under OIDC no launch can sign anyone in, so the page answers what POST /api/auth/launch answers
+    // instead of loading a form that can only fail.
+    test("/launch answers 503 with the problem while launch sign-in is unavailable, as under OIDC", async () => {
+      const saved = process.env.NEXT_PUBLIC_AUTH_PROVIDER;
+      process.env.NEXT_PUBLIC_AUTH_PROVIDER = "oidc";
+      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const res = await proxy(createNextRequest("/launch"));
+
+        expect(res.status).toBe(503);
+        expect(await res.text()).toBe("Launch sign-in is not available when NEXT_PUBLIC_AUTH_PROVIDER=oidc.");
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        expect(res.headers.get("x-frame-options")).toBe("DENY");
+      } finally {
+        if (saved === undefined) delete process.env.NEXT_PUBLIC_AUTH_PROVIDER;
+        else process.env.NEXT_PUBLIC_AUTH_PROVIDER = saved;
+        errorSpy.mockRestore();
+      }
+    });
   });
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -340,7 +375,7 @@ describe("proxy", () => {
   // ───────────────────────────────────────────────────────────────────────────
 
   describe("agent drive path", () => {
-    test("the public-path list is exactly the seven it names", () => {
+    test("the public-path list is exactly the eight it names", () => {
       const source = readFileSync(new URL("../../src/proxy.ts", import.meta.url), "utf8");
       const block = source.slice(source.indexOf("// Allow public routes"), source.indexOf("if (!token)"));
       const literals = [...block.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
@@ -353,6 +388,7 @@ describe("proxy", () => {
         "/api/health",
         "/api/db/health",
         "/api/storage/config",
+        "/launch",
       ]);
     });
 
