@@ -22,6 +22,7 @@ import { logger } from "@/lib/logger";
 import { getManagedConnections, resetCache } from "@/lib/seed";
 import { resetLiteralModeNotices, resetPlaintextWarnings } from "@/lib/seed/credential-resolver";
 import { resolveConnection, SeedConnectionError } from "@/lib/seed/resolve-connection";
+import { SAMPLE_SEED_ID } from "@/lib/seed/libredb-sample";
 import { SQLITE_SAMPLE_SEED_ID } from "@/lib/seed/sqlite-sample";
 import type { ManagedConnection } from "@/lib/seed/types";
 import { resetVaultCache } from "@/lib/seed/vault-client";
@@ -144,15 +145,19 @@ describe("SEED_LITERAL_VALUES", () => {
       ]);
     });
 
-    it("leaves a built-in sample unmarked", async () => {
+    it("leaves the built-in samples unmarked", async () => {
       process.env.SEED_LITERAL_VALUES = "true";
-      // On unless set to "false"; deleted so a developer's `.env` cannot hide the sample this test needs.
+      // On unless set to "false"; deleted so a developer's `.env` cannot hide the samples this test needs.
       delete process.env.SQLITE_EMBEDDED_SAMPLE;
+      delete process.env.LIBREDB_EMBEDDED_SAMPLE;
       const scratch = mkdtempSync(path.join(tmpdir(), "libredb-literal-sample-"));
-      // getManagedConnections lists the SQLite sample when its file exists; its content is never read here.
-      const sample = path.join(scratch, "sample-employees.db");
-      writeFileSync(sample, "");
-      process.env.SQLITE_EMBEDDED_SAMPLE_PATH = sample;
+      // getManagedConnections lists each sample when its file exists; their content is never read here.
+      const sqliteSample = path.join(scratch, "sample-employees.db");
+      const libredbSample = path.join(scratch, "sample.libredb");
+      writeFileSync(sqliteSample, "");
+      writeFileSync(libredbSample, "");
+      process.env.SQLITE_EMBEDDED_SAMPLE_PATH = sqliteSample;
+      process.env.LIBREDB_EMBEDDED_SAMPLE_PATH = libredbSample;
 
       try {
         const bySeedId = await listed();
@@ -160,8 +165,11 @@ describe("SEED_LITERAL_VALUES", () => {
         expect(bySeedId.get("orders")?.literal).toBe(true);
         expect(bySeedId.has(SQLITE_SAMPLE_SEED_ID)).toBe(true);
         expect(bySeedId.get(SQLITE_SAMPLE_SEED_ID)?.literal).toBeUndefined();
+        expect(bySeedId.has(SAMPLE_SEED_ID)).toBe(true);
+        expect(bySeedId.get(SAMPLE_SEED_ID)?.literal).toBeUndefined();
       } finally {
         delete process.env.SQLITE_EMBEDDED_SAMPLE_PATH;
+        delete process.env.LIBREDB_EMBEDDED_SAMPLE_PATH;
         rmSync(scratch, { recursive: true, force: true });
       }
     });
