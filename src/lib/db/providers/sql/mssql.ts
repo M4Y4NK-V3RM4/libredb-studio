@@ -291,11 +291,23 @@ const ACTIVE_SESSIONS_BODY_SQL = `
           s.last_request_start_time DESC
       `;
 
+/**
+ * One row per user table: its row count, its sizes and when its statistics were last updated.
+ *
+ * The sizes sum `sys.allocation_units` over every index and partition of the table, and each
+ * allocation unit belongs to exactly one partition, so each page is counted once. The row
+ * count cannot ride on that join (#1406): `sys.partitions` holds one row per INDEX, and the
+ * join repeats each partition once per allocation unit (in-row, LOB, row-overflow), so
+ * `SUM(p.rows)` there multiplied a table's rows by its indexes and allocation units. It is
+ * read instead from `sys.partitions` with `index_id IN (0, 1)` - the heap or the clustered
+ * index, one row per partition - the expression `listObjectsSql` uses for the object tree,
+ * so a table reads the same count in both surfaces.
+ */
 const TABLE_STATS_SQL = `
         SELECT
           s.name AS schema_name,
           t.name AS table_name,
-          SUM(p.rows) AS row_count,
+          (SELECT SUM(rp.rows) FROM sys.partitions rp WHERE rp.object_id = t.object_id AND rp.index_id IN (0, 1)) AS row_count,
           SUM(a.total_pages) * 8 * 1024 AS total_size_bytes,
           SUM(a.used_pages) * 8 * 1024 AS used_size_bytes,
           SUM(CASE WHEN i.type IN (0, 1) THEN a.total_pages ELSE 0 END) * 8 * 1024 AS table_size_bytes,

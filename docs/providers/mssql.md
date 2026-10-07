@@ -1123,7 +1123,7 @@ in parallel. Each sub-query is independently privilege-guarded (DMVs need `VIEW 
 | `getPerformanceMetrics()` | `dm_os_performance_counters` | **only** the cache-hit ratio, and it is **omitted** when the DMV cannot be read (no QPS/deadlocks/buffer-pool) — [§8.1](#81-when-the-cache-hit-ratio-is-not-measurable) |
 | `getSlowQueries()` | `dm_exec_query_stats` ⋈ `dm_exec_sql_text` | `sharedBlksHit`=logical reads, `sharedBlksRead`=physical reads; `[]` on failure |
 | `getActiveSessions()` | `dm_exec_sessions` ⋈ `dm_exec_requests` ⋈ `dm_exec_sql_text` | **`blocked` is real** (`blocking_session_id > 0`); wait types; `[]` on failure |
-| `getTableStats()` | `sys.tables`/`partitions`/`allocation_units` | sizes + `lastAnalyze` (`STATS_DATE`); no live/dead tuples; `[]` on failure |
+| `getTableStats()` | `sys.tables`/`partitions`/`allocation_units` | row count from `sys.partitions` with `index_id IN (0, 1)`, never summed over the allocation-unit join ([#1406](https://github.com/libredb/libredb-studio/issues/1406)); sizes summed over `allocation_units` + `lastAnalyze` (`STATS_DATE`); no live/dead tuples; `[]` on failure |
 | `getIndexStats()` | `sys.indexes`/`allocation_units` + `dm_db_index_usage_stats` | **`scans` is real** (seeks+scans+lookups); `[]` on failure |
 | `getStorageStats()` | `sys.database_files` | per-file name/path/size; `[]` on failure |
 
@@ -1747,6 +1747,16 @@ hardcoded spellings. Supply the password configured on the container:
 
 ```bash
 MSSQL_TEST_PORT=1433 MSSQL_TEST_PASSWORD="$PROBE_PASSWORD" bun tests/live/mssql-zoneless-values.ts
+```
+
+`tests/live/mssql-table-stats-row-count.ts` (#1406, [§8](#8-monitoring--health)) holds the
+Monitoring > Tables row count against the server itself: it creates a throwaway database with a
+table carrying a primary key and a UNIQUE constraint, one with a secondary index and one with LOB
+columns, and requires `getTableStats()` to read each table's row count exactly as the engine's own
+`COUNT(*)` answers it:
+
+```bash
+MSSQL_TEST_PORT=1433 MSSQL_TEST_PASSWORD="$PROBE_PASSWORD" bun tests/live/mssql-table-stats-row-count.ts
 ```
 
 For the object surface, apply the fixture first. The image has **no init-script directory** (no

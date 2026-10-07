@@ -1953,6 +1953,83 @@ describe("MSSQLProvider", () => {
       expect(typeof first.totalSize).toBe("string");
       expect(typeof first.totalSizeBytes).toBe("number");
     });
+
+    // #1406: `sys.partitions` holds one row per index and the `sys.allocation_units` join
+    // repeats each partition once per allocation unit, so a row count summed over that join
+    // multiplied a table's rows by its indexes and allocation units (2 rows read as 4 on a
+    // table with a primary key and a unique constraint, 6 on one with LOB columns). The count
+    // is read from the heap or clustered index alone; the sizes stay summed over the units.
+    test("reads the row count from the heap or clustered index, outside the allocation-unit join", async () => {
+      const statements: string[] = [];
+      mockQueryFn = async (sql: string) => {
+        statements.push(sql);
+        return { recordset: [], rowsAffected: [0] };
+      };
+      await provider.connect();
+      statements.length = 0;
+      await provider.getTableStats();
+
+      expect(statements).toHaveLength(1);
+      const sql = statements[0].replace(/\s+/g, " ");
+      const rowCount = /AS table_name, (\(SELECT .*?\)) AS row_count,/.exec(sql)?.[1];
+      expect(rowCount).toBe(
+        "(SELECT SUM(rp.rows) FROM sys.partitions rp WHERE rp.object_id = t.object_id AND rp.index_id IN (0, 1))",
+      );
+      expect(sql).not.toContain("SUM(p.rows)");
+      // Nothing in the count reaches the outer join's partitions (`p.`) or allocation units (`a.`).
+      expect(rowCount).not.toMatch(/\b[pa]\./);
+      // The sizes are unchanged: still summed over every allocation unit of every index.
+      expect(sql).toContain("SUM(a.total_pages) * 8 * 1024 AS total_size_bytes");
+      expect(sql).toContain("SUM(a.used_pages) * 8 * 1024 AS used_size_bytes");
+      expect(sql).toContain(
+        "SUM(CASE WHEN i.type IN (0, 1) THEN a.total_pages ELSE 0 END) * 8 * 1024 AS table_size_bytes",
+      );
+      expect(sql).toContain("SUM(CASE WHEN i.type > 1 THEN a.total_pages ELSE 0 END) * 8 * 1024 AS index_size_bytes");
+      expect(sql).toContain("JOIN sys.allocation_units a ON p.partition_id = a.container_id");
+    });
+
+    test("reports each table's row count exactly as the statement answers it", async () => {
+      // The three tables measured in #1406 on SQL Server 2025, with the counts `COUNT(*)` gives.
+      mockQueryFn = async () => ({
+        recordset: [
+          {
+            schema_name: "dbo",
+            table_name: "dept",
+            row_count: 2,
+            total_size_bytes: 32768,
+            table_size_bytes: 16384,
+            index_size_bytes: 16384,
+          },
+          {
+            schema_name: "dbo",
+            table_name: "emp",
+            row_count: 3,
+            total_size_bytes: 32768,
+            table_size_bytes: 16384,
+            index_size_bytes: 16384,
+          },
+          {
+            schema_name: "dbo",
+            table_name: "t_types",
+            row_count: 2,
+            total_size_bytes: 24576,
+            table_size_bytes: 24576,
+            index_size_bytes: 0,
+          },
+        ],
+        rowsAffected: [3],
+      });
+      await provider.connect();
+      const stats = await provider.getTableStats();
+
+      expect(stats.map((table) => [table.tableName, table.rowCount])).toEqual([
+        ["dept", 2],
+        ["emp", 3],
+        ["t_types", 2],
+      ]);
+      expect(stats.reduce((sum, table) => sum + table.rowCount, 0)).toBe(7);
+      expect(stats.map((table) => table.totalSizeBytes)).toEqual([32768, 32768, 24576]);
+    });
   });
 
   // =========================================================================
