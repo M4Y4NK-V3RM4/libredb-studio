@@ -310,18 +310,41 @@ after an unplanned primary loss as up to 12 seconds and notes that network laten
 This provider used to hand that option `pool.acquireTimeout`, whose default is 60000
 ([`types.ts`](../../src/lib/db/types.ts)), so Test Connection to a host and port where nothing
 listens held the spinner for a minute (`Test Connection` passes `queryTimeout: 10000`, which
-`connect()` does not read). Measured here against a closed port on 127.0.0.1: 60.0 s before, 30.0 s
+`connect()` did not read). Measured here against a closed port on 127.0.0.1: 60.0 s before, 30.0 s
 after. `connectTimeoutMS` did not bound it and does not: that option caps ONE TCP attempt, and a
 refused connection fails its attempt at once.
 
 30 s is the driver's own default and sits above the election window, so a write issued right after
 an unplanned primary loss waits the election out instead of failing at the deadline. It is a
 ceiling under abnormal discovery, not a latency budget: a healthy deployment selects a server well
-before it, and a closed port is still reported only once the 30 s have passed, half the old
+before it, and a closed port used to be reported only after the full 30 s, half the old
 minute. The value is a constant in
 [`mongodb.ts`](../../src/lib/db/providers/document/mongodb.ts) rather than a second pool field,
 because it governs the whole client and not only the connect; `connectTimeoutMS` keeps following
 `pool.acquireTimeout` for the pool's own dial.
+
+**The connect itself is bounded by the request's `queryTimeout` (#1573).** The 30 s selection
+bound above is the client's, and a request that only wants to know whether the server is there
+should not wait it out: `connect()` races `MongoClient.connect()` against the `queryTimeout` the
+request already carries (10000 for Test Connection, `DEFAULT_QUERY_TIMEOUT` 60000 otherwise,
+[`types.ts`](../../src/lib/db/types.ts)), and closes the client when the deadline wins. The
+reported error is a `ConnectionError` naming the refusal the driver's monitoring saw (its last
+heartbeat failure, read from the `serverHeartbeatFailed` events the client relays), not a generic
+timeout. Two details the driver forces:
+
+- With `mongodb+srv`, `MongoClient._connect` resolves the SRV record before it creates the
+  topology and never checks `hasBeenClosed` (`mongo_client.js`), so a `close()` that lands during
+  a slow DNS lookup is a no-op. The client is closed again once the connect promise settles, so
+  no socket outlives the request either way.
+- A failed `connect()` closes the client and clears it, rather than leaving `this.client` set
+  with `this.db` null: on main the `connect()` guard only checks `this.client && this.db`, so a
+  failed ping used to leave the half-open client behind and a later `connect()` returned as if
+  it were connected.
+
+Measured against a closed port on 127.0.0.1 with `queryTimeout: 10000`: the refusal
+(`connect ECONNREFUSED`) arrives in 10.0 s instead of 30.0. The write path is unchanged: the
+30 s client-wide bound still governs every operation after the connect, and no failover was
+run to measure it here.
 
 ### 4.1 SSL / TLS
 
@@ -563,7 +586,8 @@ Inside a database, the reserved namespace prefix is **`system.` with the dot**. 
 `systemetrics` is created without complaint. The fixture holds `systemetrics`, so a rule written on
 the letters `system` without the dot fails a test by name. The two internal namespaces the fixture's
 own listing contains are `system.views` (created the moment a view is) and
-`system.buckets.readings` (the bucket collection behind the time series one).
+`system.buckets.readings` (the bucket collection behind the time series one). `getTableStats()`
+applies the same prefix, so Monitoring's Tables list does not show either of them.
 
 `listDatabases` is sent as `{ listDatabases: 1, nameOnly: true, authorizedDatabases: true }`. The
 flag is load-bearing rather than tidy: the server's default for it depends on whether the connecting
@@ -902,7 +926,7 @@ Every method is wrapped in try/catch. Degradation reports the absence rather tha
 | `getPerformanceMetrics()` | `serverStatus` (WiredTiger + opcounters) | cache-hit %, **ops/sec** (`query`+`insert`+`update`+`delete` opcounters ÷ uptime — *total operations, not just queries*), buffer-pool % (cache bytes), `deadlocks: 0`. **Every field is optional**: each one is present only if its reading was, and a failed `serverStatus` reports `{}` ([§7.1](#71-what-the-panel-shows-when-the-cache-cannot-be-measured)) |
 | `getSlowQueries()` | `system.profile` | per-op time/returned; **`[]` if the profiler isn't enabled** (`db.setProfilingLevel(1)`); sorted by `millis` (slowest) — note `getHealth()`'s slow-query block instead sorts by `ts` (most recent) and emits a placeholder row when disabled |
 | `getActiveSessions()` | `currentOp` | opid, ns, lock waits, duration — ⚠️ the **`user` field is populated from `op.client`** (the client `host:port`), **not** an authenticated user |
-| `getTableStats()` | `collStats` per collection | row count + data/index/total sizes, `totalIndexSize` carried as the byte figure `indexSizeBytes` and not only as formatted text; a time series collection is **one** row, because the server's internal `system.buckets.<name>` duplicate is skipped rather than summed beside it |
+| `getTableStats()` | `collStats` per collection | row count + data/index/total sizes, `totalIndexSize` carried as the byte figure `indexSizeBytes` and not only as formatted text; a time series collection is **one** row, because the server's internal `system.buckets.<name>` duplicate is skipped rather than summed beside it; every other `system.*` namespace (`system.views` included) is skipped with the same `system.` prefix the object browser uses, so Monitoring lists the same collections the tree does. `systemetrics` does not start with that prefix and stays |
 | `getIndexStats()` | `$indexStats` + `indexes()` | **real `scans`** (`accesses.ops`); `indexSize` `N/A`; **`indexType` only distinguishes `text` vs `btree`** — `hashed`/`2dsphere`/`2d`/wildcard/clustered are all mislabelled `btree` |
 | `getStorageStats()` | `dbStats` + WiredTiger | Data / Indexes / Storage / WiredTiger cache (with usage %) |
 
@@ -1089,8 +1113,37 @@ collection is collected rather than ending the run, and the result names it:
 false whenever anything failed. Before #1408 the first view aborted the validate loop with a 500,
 and the compact loop swallowed every error into a bare "Compacted collections".
 
-`getCapabilities().maintenanceOperations = ['vacuum', 'analyze', 'check']` — so the UI surfaces those
-three, though `runMaintenance` also accepts `optimize`/`kill`/`reindex` when invoked directly.
+`getCapabilities().maintenanceOperations = ['vacuum', 'analyze', 'check', 'kill']` — so the UI offers
+those four (`kill` as the session lists' Terminate button), though `runMaintenance` also accepts
+`optimize`/`reindex` when invoked directly.
+
+`kill` was implemented and undeclared until #1424, so `/api/db/maintenance` refused the Terminate
+button both session lists drew: `Operation 'kill' not supported for this database. Supported: vacuum,
+analyze, check`. It is declared now, and the button sends `killOp` with the row's opid. Measured on
+MongoDB 9.0.2: an insert blocked behind `fsyncLock` was ended by it (`Interrupted`).
+
+Not every session row takes it. `getActiveSessions()` reads `currentOp` with `$all`, which also
+answers rows `killOp` cannot end, and those carry `terminable: false` so neither list draws the
+button on them. One run on MongoDB 9.0.2 with only Studio connected listed 39 rows:
+
+| Rows | What they are | Terminate |
+|------|---------------|-----------|
+| 34 | server threads (`TTLMonitor`, `ftdc`, ...): no opid | no |
+| 2 | Studio's own idle connections: no opid | no |
+| 2 | server jobs (`Checkpointer`, `JournalFlusher`): an opid, but `killOp` answers `"attempting to kill op"` and both keep running | no |
+| 1 | this read's own `currentOp`, finished before anyone can click | no |
+
+So no row in that run was offered Terminate, while the blocked insert above, another client's running
+operation, was.
+
+Other rows can be offered it, because each carries an opid and a client while it is in flight:
+
+- a driver's own monitoring `hello` (`maxAwaitTimeMS: 10000`), Studio's included: `killOp` ends it,
+  and the driver sends a new one;
+- another command of the same Studio read, such as the `serverStatus` sent beside `currentOp`: it has
+  finished before anyone can click, and `killOp` on its opid answers `ok` and does nothing.
+
+The server accepts the kill on both, so neither is a refusal the button can produce.
 
 ### Where each operation may be offered (`maintenanceOperationSpecs`)
 
@@ -1111,6 +1164,7 @@ request here.
 | `vacuum` | Compact Collection | yes | yes | `{compact: <coll>}`, or every collection from `listCollections()` |
 | `analyze` | Validate Collection | yes | yes | `{validate: <coll>}`, same loop without a target |
 | `check` | Check Collection | yes | **no** | `{dbCheck: <coll>}` is not looped and throws without a collection name |
+| `kill` | Kill Operation | no | no | `{killOp: 1, op: <opid>}`; the target is an opid, which only the Sessions panel lists |
 
 *"Compact Collection"* really is the `vacuum` this provider declares, so
 `vacuumActionOperation` stays absent.
@@ -1286,7 +1340,7 @@ Over the API: `POST /api/db/query` (JSON MQL in the `sql` field) and `POST /api/
   provider exposes no begin/commit/rollback API, and no statement it accepts can open one, which is
   why `endOpenQueryTransaction()` is absent ([§5](#endopenquerytransaction-is-absent-and-which-absence-it-is-d75)).
 - **No `cancelQuery`.** A running operation can only be terminated via maintenance `killOp` (needs the
-  opid and privileges).
+  opid and privileges), which the Sessions panel's Terminate button sends (#1424).
 - **No column modification in a generated migration.** Since
   [#269](https://github.com/libredb/libredb-studio/issues/269) the schema-diff migration generator
   answers a modified column per dialect; collections are schemaless, so it emits

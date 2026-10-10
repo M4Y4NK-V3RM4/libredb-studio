@@ -15,6 +15,7 @@
   <a href="README_es.md">Español</a> ·
   <b>اردو</b> ·
   <a href="README_hi.md">हिन्दी</a> ·
+  <a href="README_ko.md">한국어</a> ·
   <a href="README_pt.md">Português (Brasil)</a> ·
   <a href="README_ru.md">Русский</a>
 </p>
@@ -31,6 +32,7 @@
 </p>
 <p align="center" dir="rtl">
   اس کے علاوہ
+  <a href="https://node-oracledb.readthedocs.io/en/latest/user_guide/appendix_b.html#libredb-studio">Oracle</a>،
   <a href="https://planet.mysql.com/showcase/?search=LibreDB">MySQL</a>،
   <a href="https://redis.io/docs/latest/develop/tools/#libredb-studio">Redis</a>،
   <a href="https://clickhouse.com/docs/integrations/connectors/tools/gui#libredb-studio">ClickHouse</a>،
@@ -44,8 +46,11 @@
   <a href="https://opensearch.org/community-projects/#:~:text=LibreDB%20Studio">OpenSearch</a>،
   <a href="https://duckdb.org/docs/preview/guides/sql_editors/libredb_studio">DuckDB</a>،
   <a href="https://docs.starrocks.io/docs/integrations/IDE_integrations/LibreDB_Studio/">StarRocks</a>،
+  <a href="https://docs.databend.com/guides/connect/sql-clients/libredb-studio">Databend</a>،
   <a href="https://aiven.io/docs/products/postgresql/howto/connect-libredb-studio">Aiven for PostgreSQL</a>،
-  <a href="https://aiven.io/docs/products/mysql/howto/connect-libredb-studio">Aiven for MySQL</a>
+  <a href="https://aiven.io/docs/products/mysql/howto/connect-libredb-studio">Aiven for MySQL</a>،
+  <a href="https://cwiki.apache.org/confluence/display/KAFKA/Ecosystem#:~:text=LibreDB%20Studio">Apache Kafka</a>،
+  <a href="https://cassandra.apache.org/_/ecosystem.html">Apache Cassandra</a>
   اور
   <a href="https://druid.apache.org/libraries/#:~:text=LibreDB%20Studio">Apache Druid</a>
   کی سرکاری دستاویزات میں بھی درج ہے
@@ -114,11 +119,11 @@ npx @libredb/studio
 
 ## <span dir="rtl">بنیادی صلاحیتیں</span>
 
-### <span dir="rtl">چھبیس engines، ایک interface</span>
+### <span dir="rtl">ستائیس engines، ایک interface</span>
 
 </div>
 
-PostgreSQL · MySQL · Oracle · Db2 LUW · SQL Server · SQLite · libSQL · DuckDB · MongoDB · Redis · Couchbase · ClickHouse · Apache Druid · Elasticsearch · OpenSearch · Trino · Apache Cassandra · Prometheus · Apache Kafka · etcd · Neo4j · Milvus · Qdrant · InfluxDB (InfluxQL) · InfluxDB 3 (SQL) · Oxia
+PostgreSQL · MySQL · Oracle · Db2 LUW · SQL Server · SQLite · libSQL · DuckDB · MongoDB · Redis · Couchbase · ClickHouse · Apache Druid · Elasticsearch · OpenSearch · Trino · Databend · Apache Cassandra · Prometheus · Apache Kafka · etcd · Neo4j · Milvus · Qdrant · InfluxDB (InfluxQL) · InfluxDB 3 (SQL) · Oxia
 
 <div dir="rtl" align="right">
 
@@ -143,6 +148,7 @@ PostgreSQL · MySQL · Oracle · Db2 LUW · SQL Server · SQLite · libSQL · Du
 | **Elasticsearch** | <span dir="rtl">کوئی مخصوص driver نہیں؛ براہِ راست HTTP (`POST /_sql?format=json`، port 9200)</span> | <span dir="rtl">read-only SQL IDE، mapping پر مبنی indexes اور fields explorer، cluster health، اور ہر index کے لیے document count اور size۔ EXPLAIN نہیں، maintenance operations نہیں، اور slow queries یا sessions panels بھی نہیں۔ Elasticsearch SQL میں `OFFSET` بھی نہیں، اس لیے results کا دوسرا page نہیں مانگا جا سکتا</span> |
 | **OpenSearch** | <span dir="rtl">کوئی مخصوص driver نہیں؛ براہِ راست HTTP (`POST /_plugins/_sql`، port 9200)</span> | <span dir="rtl">Elasticsearch والا ہی provider module، وہی read-only IDE اور وہی explorer۔ یہاں `LIMIT n OFFSET m` کام کرتا ہے، اس لیے pagination دستیاب ہے</span> |
 | **Trino** | <span dir="rtl">کوئی مخصوص driver نہیں؛ براہِ راست HTTP (client protocol، `POST /v1/statement`، port 8080)</span> | <span dir="rtl">تمام configured catalogs پر مکمل SQL IDE، connection میں مقرر catalog کے `information_schema` کے ذریعے schema tree، `system.runtime` اور `jmx` سے monitoring، `SHOW STATS` سے اصل row counts، query cancellation اور `kill_query` کے ساتھ maintenance۔ Trino query engine ہے اور data store نہیں کرتا، اس لیے کہیں بھی primary keys، foreign keys یا indexes declare نہیں کرتا: ER diagram میں lines کے بغیر boxes ہوتے ہیں، inline editing بند رہتی ہے، اور capacity panel مصنوعی size بنانے کے بجائے catalogs دکھاتا ہے۔ ناکام statements بھی HTTP 200 کے ساتھ واپس آتی ہیں؛ اور cluster میں authentication بند ہو تب بھی plain HTTP پر password رد کر دیا جاتا ہے</span> |
+| **Databend** | <span dir="rtl">کوئی مخصوص driver نہیں؛ براہِ راست HTTP (Databend کا اپنا query API، `POST /v1/query`، port 8000)</span> | <span dir="rtl">Self-hosted Databend server یا Databend Cloud warehouse پر SQL IDE: tree میں catalogs اور databases، ان کی tables، views، materialized views اور dynamic tables کے ساتھ، text `EXPLAIN` plans، default catalog کی `system.*` سے monitoring، اور Sessions panel سے `KILL QUERY` کے ذریعے query cancellation۔ ہر statement اپنے الگ session میں چلتی ہے، اس لیے transaction یا temporary table اسے کھولنے والی statement کے ساتھ ختم ہو جاتی ہے۔ Databend کوئی keys declare نہیں کرتا، اس لیے inline row editing بند رہتی ہے، اور Create Table بھی۔ plain HTTP پر ایسے host کو password، جو نہ loopback ہے نہ tunnel سے، تب تک refuse ہوتا ہے جب تک connection رضامندی نہ دے۔ Cloud connection اپنا warehouse بتاتا ہے، جو پہلی statement پر resume ہوتا ہے اور اسی سے billing شروع ہوتی ہے؛ connection کھولنا بھی اس میں شامل ہے، کیونکہ وہ object tree پڑھتا ہے۔ custom CA اور client certificates کے ساتھ TLS؛ SSH tunnel</span> |
 | **Apache Cassandra** | <span dir="rtl">`cassandra-driver` (خالص JavaScript، native modules کے بغیر)</span> | <span dir="rtl">native protocol (port 9042) پر CQL IDE، partition اور clustering keys نشان زد keyspaces explorer، `system_views` سے summary، uptime اور چلتی ہوئی statements۔ Connection کے لیے **`localDataCenter` لازمی ہے**: اس کے بغیر driver connect کرنے سے انکار کر دیتا ہے۔ EXPLAIN نہیں (CQL grammar میں یہ keyword موجود ہی نہیں)، query cancellation نہیں (protocol میں cancel frame نہیں) اور maintenance operations نہیں (compaction، repair اور flush، `nodetool` کے JMX operations ہیں)۔ اور **یہ کوئی row count یا size نہیں دکھاتا**: Cassandra صرف disk پر پہلے سے لکھی files سے partitions کا اندازہ (500 rows کی table کو 143 پڑھا گیا) اور MiB میں integers (19,476 bytes کی table کو `1 MiB` پڑھا جاتا ہے) دے سکتا ہے، اس لیے غلط number دکھانے کے بجائے ہم کچھ نہیں دکھاتے</span> |
 | **Prometheus** | <span dir="rtl">کوئی مخصوص driver نہیں؛ براہِ راست HTTP (Prometheus HTTP API، port 9090)</span> | <span dir="rtl">PromQL editor جو text کو بغیر تبدیلی server تک بھیجتا ہے، نتائج grid اور chart tab میں (`rate(x[5m])[1h:1m]` جیسی step والی subquery timestamps پر lines کی صورت میں chart ہوتی ہے: tab پہلی series سے کھلتا ہے، Y-Axis menu سے مزید series شامل کی جا سکتی ہیں، ہر series کی ایک line، اور ایک وقت میں زیادہ سے زیادہ آٹھ lines بنتی ہیں، اس سے آگے chart "Showing first 8 of N series" دکھاتا ہے؛ لیکن chart کسی missing sample کو، اور numbers کے درمیان `NaN` یا `Inf` کو، 0 پر دکھاتا ہے، اس لیے الگ الگ وقت پر scrape ہونے والے targets کی raw range query جھوٹے صفر دکھاتی ہے)، metrics explorer جس میں label names columns اور metadata source ہیں، rule groups اور recording و alerting rules (firing alert tree میں نشان زد)، scrape pools اور targets (down target tree میں نشان زد)، اور health، version، uptime اور TSDB statistics۔ Design کے لحاظ سے صرف پڑھنے کے لیے: admin API یا remote write استعمال نہیں ہوتے، EXPLAIN نہیں (parse endpoint ابھی experimental ہے) اور maintenance operations نہیں۔ Plain HTTP پر credential رد نہیں ہوتا بلکہ بھیج دیا جاتا ہے، اس لیے جس network پر آپ کا اختیار نہ ہو وہاں TLS فعال کریں</span> |
 | **Apache Kafka** | <span dir="rtl">`@platformatic/kafka` (pure TypeScript، port 9092)</span> | <span dir="rtl">JSON read request جو topic کو partition، offset یا timestamp سے، سب سے پرانے offset سے یا تازہ ترین messages پڑھتی ہے؛ keys، values اور headers JSON، text یا base64 میں decode ہوتے ہیں اور Confluent format والی value اپنے schema id سے نشان زد ہوتی ہے؛ topic browser میں partitions اور non-default configs (offline یا under-replicated topic نشان زد)، دونوں protocols کے consumer groups اور ہر partition کا lag، brokers اور ان کے configs، اور health، topic count اور disk size۔ ساخت کے لحاظ سے صرف پڑھنے کے لیے: نہ produce، نہ offset commit، نہ consumer group میں شمولیت، نہ topic بنانا۔ Custom CA اور client certificates کے ساتھ TLS، اور SASL PLAIN یا SCRAM صرف TLS پر؛ SSH tunnel نہیں، کیونکہ brokers تک ان کے advertised addresses پر پہنچا جاتا ہے</span> |

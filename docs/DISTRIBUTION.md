@@ -384,7 +384,13 @@ an IPv6 address that refuses every connection, and the install notes warn about 
 
 `operator/` packages the published Helm chart as a codeless helm-operator
 (operator-sdk helm plugin): a `LibreDBStudio` custom resource whose spec mirrors
-the chart values. Publishing works in two stages:
+the chart values.
+
+The one value the spec does not mirror is `extraObjects`, which the CRD refuses with a CEL rule (#1526).
+The operator applies the release with its own cluster-wide service account, so a manifest listed there would be created with the operator's permissions instead of those of whoever wrote the resource, and the editor role is meant to grant no RBAC.
+Plain Helm applies a release with the installer's own credentials, and Argo CD within the limits of its AppProject, so the chart offers the value there.
+
+Publishing works in two stages:
 
 - **Controller image** — `.github/workflows/operator-release.yml` builds and
   pushes `ghcr.io/libredb/libredb-studio-operator:<version>` (amd64+arm64) on
@@ -1185,8 +1191,8 @@ They are documented here rather than under `deploy/<provider>/` because neither 
 this repo: the Sealos template lives upstream in
 [`labring-actions/templates`](https://github.com/labring-actions/templates) and the Unraid template
 in [`libredb/unraid-templates`](https://github.com/libredb/unraid-templates), and neither has a
-`deploy/<provider>/` folder here at all. They are two of the eight catalog channels with no such
-folder - the others are TrueNAS SCALE, CasaOS, the three open submissions (Umbrel, Easypanel,
+`deploy/<provider>/` folder here at all. They are two of the nine catalog channels with no such
+folder - the others are TrueNAS SCALE, CasaOS, the [Dokku plugin](#dokku-plugin), the three open submissions (Umbrel, Easypanel,
 Portainer) and Google Cloud Marketplace, whose artefacts live in Google's Producer Portal. The
 catalog channels that DO keep a folder keep their notes in `deploy/<provider>/README.md` - CapRover and Railway alongside the source
 descriptor itself, Dokploy, Kubero and Cosmos as notes only, since those three descriptors are also
@@ -1243,6 +1249,24 @@ provisions compute, networking, storage and ingress, so there is nothing to inst
 - Bumps go in as a template PR to `labring-actions/templates`. That repo's default branch is
   **`kb-0.9`**, not `main` or `master`, which is what both the drift-check pin URL and any bump PR
   must target.
+
+## Dokku plugin
+
+Listed on Dokku's [community plugins page](https://dokku.com/docs/community/plugins/) since 2026-10-08 ([dokku/dokku#9116](https://github.com/dokku/dokku/pull/9116)).
+Dokku has no application catalog, so the channel is a Dokku plugin, [`libredb/dokku-libredb-studio`](https://github.com/libredb/dokku-libredb-studio), rather than a template.
+On the Dokku host:
+
+```bash
+sudo dokku plugin:install https://github.com/libredb/dokku-libredb-studio.git
+dokku libredb-studio:install
+dokku letsencrypt:enable libredb-studio
+```
+
+`libredb-studio:install` creates the `libredb-studio` app, deploys a pinned image tag, connects Studio to every `postgres`, `mysql`, `mariadb`, `mongo` and `redis` service on the host, and prints the admin login.
+Services created or destroyed later are added to or removed from Studio by the plugin, through the [seed connection file](SEED_CONNECTIONS.md) Studio re-reads, with no restart.
+The login cookie is Secure, hence the `letsencrypt` step; flags, the network model and password recovery are in the plugin's README.
+
+The plugin is LibreDB-owned, so a version bump is a commit and a release in that repo, not a PR here or upstream.
 
 ## Google Cloud Marketplace
 

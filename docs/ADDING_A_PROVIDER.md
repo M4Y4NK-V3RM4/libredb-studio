@@ -19,7 +19,7 @@ Three decisions. The first is the consequential one, which is why it is first.
 
 1. **Does it need a driver at all?** Score the engine against the rubric below. A database with a
    first-class HTTP API can be supported with no dependency at all, and that is worth real effort to
-   establish before you start. Twelve shipped type-ids need no driver: SQLite uses the built-in
+   establish before you start. Thirteen shipped type-ids need no driver: SQLite uses the built-in
    `bun:sqlite`/`node:sqlite` via `sqlite-driver.ts`, and the rest reach the engine over HTTP with
    nothing but `fetch`/`node:https`. Couchbase goes over the documented REST endpoints
    ([couchbase.md](./providers/couchbase.md)), ClickHouse over its HTTP interface
@@ -29,8 +29,9 @@ Three decisions. The first is the consequential one, which is why it is first.
    Trino over its own client protocol ([trino.md](./providers/trino.md)), libSQL over the
    Hrana protocol, `POST /v2/pipeline` ([libsql.md](./providers/libsql.md)), Prometheus over its
    HTTP API, `/api/v1/*` ([prometheus.md](./providers/prometheus.md)), Qdrant over its REST API
-   ([qdrant.md](./providers/qdrant.md)), and InfluxDB and InfluxDB 3 over the v1 `/query` API and
-   `/api/v3/query_sql` ([influxdb.md](./providers/influxdb.md) · [influxdb3.md](./providers/influxdb3.md)).
+   ([qdrant.md](./providers/qdrant.md)), InfluxDB and InfluxDB 3 over the v1 `/query` API and
+   `/api/v3/query_sql` ([influxdb.md](./providers/influxdb.md) · [influxdb3.md](./providers/influxdb3.md)),
+   and Databend over its own HTTP query API, `POST /v1/query` ([databend.md](./providers/databend.md)).
    If it does need one, it will be something like `pg`, `mysql2`, `mongodb`, `ioredis`, `oracledb`,
    `mssql` or `db2-node`.
 
@@ -128,6 +129,13 @@ A new provider that speaks HTTP builds the HTTP side of its transport seam on `c
 It dials through `node:http` or `node:https` with one keep-alive Agent per connection, `maxSockets` set to the provider's in-flight bound and an idle socket closed after 4 s (below a server keep-alive such as Qdrant's 5 s, #1419), so no proxy variable can route a request, no redirect is followed, a request whose answer was lost is never sent again, and an answer stops at the byte cap the provider passes.
 It maps the SSL / TLS panel through `nodeTlsMaterial`, the one TLS mapping a new provider takes, and checks the certificate against the far end of an SSH tunnel rather than the local forward.
 With `DB_HTTP_BLOCK_PRIVATE_HOSTS` on, the egress guard's lookup runs on that Agent, so pooled sockets stay guarded.
+A provider that needs headers per request lists their lower-case names in `requestHeaderNames` and passes them in `NodeRequest.headers`; a name the transport or the connection owns is refused when the transport is built.
+A provider that reads stored objects instead of statement results builds on `createNodeByteTransport` in the same file.
+It sends GET and HEAD only, to an exact request target built with `rfc3986Path` and `rfc3986Query` from [`endpoint.ts`](../src/lib/db/http/endpoint.ts), and returns the body as bytes, never decoded, with an optional `truncateAt` that keeps the first bytes and says so.
+Besides `contentType`, `contentEncoding` and `retryAfter`, it returns only the response headers its connection selects, never Location or Set-Cookie, and on a refused redirect it carries the status and those headers without following it.
+A `signer` is called once per request just before it is written, with the exact method, Host, path, query and headers, and adds only the header names it lists.
+Its connection headers meet the rule a request's own headers meet, so `authorization` comes from the signer alone.
+It never reaches a link-local address or AWS's IPv6 instance metadata address, whatever `DB_HTTP_BLOCK_PRIVATE_HOSTS` says.
 The older HTTP providers keep their own transports until D37 in [`BACKLOG.md`](BACKLOG.md) moves them.
 
 **Send gRPC calls through the shared gRPC transport.**
@@ -227,10 +235,10 @@ The Memgraph provider is filed as `docs/BACKLOG.md` D141.
 
 ```typescript
 // Before:
-export type DatabaseType = 'postgres' | 'mysql' | 'sqlite' | 'libsql' | 'duckdb' | 'mongodb' | 'redis' | 'oracle' | 'db2' | 'mssql' | 'libredb' | 'couchbase' | 'clickhouse' | 'druid' | 'elasticsearch' | 'opensearch' | 'trino' | 'cassandra' | 'prometheus' | 'kafka' | 'etcd' | 'neo4j' | 'milvus' | 'qdrant' | 'influxdb' | 'influxdb3' | 'oxia';
+export type DatabaseType = 'postgres' | 'mysql' | 'sqlite' | 'libsql' | 'duckdb' | 'mongodb' | 'redis' | 'oracle' | 'db2' | 'mssql' | 'libredb' | 'couchbase' | 'clickhouse' | 'druid' | 'elasticsearch' | 'opensearch' | 'trino' | 'cassandra' | 'prometheus' | 'kafka' | 'etcd' | 'neo4j' | 'milvus' | 'qdrant' | 'influxdb' | 'influxdb3' | 'oxia' | 'databend';
 
 // After (example: adding CockroachDB):
-export type DatabaseType = 'postgres' | 'mysql' | 'sqlite' | 'libsql' | 'duckdb' | 'mongodb' | 'redis' | 'oracle' | 'db2' | 'mssql' | 'libredb' | 'couchbase' | 'clickhouse' | 'druid' | 'elasticsearch' | 'opensearch' | 'trino' | 'cassandra' | 'prometheus' | 'kafka' | 'etcd' | 'neo4j' | 'milvus' | 'qdrant' | 'influxdb' | 'influxdb3' | 'oxia' | 'cockroachdb';
+export type DatabaseType = 'postgres' | 'mysql' | 'sqlite' | 'libsql' | 'duckdb' | 'mongodb' | 'redis' | 'oracle' | 'db2' | 'mssql' | 'libredb' | 'couchbase' | 'clickhouse' | 'druid' | 'elasticsearch' | 'opensearch' | 'trino' | 'cassandra' | 'prometheus' | 'kafka' | 'etcd' | 'neo4j' | 'milvus' | 'qdrant' | 'influxdb' | 'influxdb3' | 'oxia' | 'databend' | 'cockroachdb';
 ```
 
 A type-id may contain a digit: `db2` does.
@@ -799,9 +807,10 @@ Every field and what it controls:
 | `implicitCommitStatements` | `readonly string[]?` | The statements that can END the open transaction on this engine beyond the `COMMIT`/`ROLLBACK`/`ABORT` every engine has, each an upper-cased sequence of leading words (`"CREATE"`, `"PREPARE TRANSACTION"`): implicitly committing DDL (MySQL, Oracle), a dialect's own COMMIT synonym (PostgreSQL's `END`), or code the provider cannot check afterwards (an Oracle PL/SQL block). SANDBOX refuses a text containing one before anything is sent, because the `ROLLBACK` it ends with would answer success and could undo nothing. Declare it only with `supportsTransactions: true`. A provider that can read the server's transaction state should also refuse a `BEGIN` that opened nothing and end its session when a statement ended the transaction, so the route can answer `inTransaction: false` (see `postgres.ts` and `mysql.ts`) |
 | `implicitCommitExceptions` | `readonly string[]?` | Word sequences an `implicitCommitStatements` entry would match that do NOT end the transaction (Oracle's `ALTER SESSION`, MySQL's `CREATE TEMPORARY`). Read only together with that list |
 | `declaresForeignKeys` | `boolean?` | Whether this engine has foreign keys in its model at all. `false` says an empty foreign-key list means "no such constraint exists here", not "this schema declares none" — set it on every engine without referential constraints. Optional for the published-interface reason above; consumers gate on `=== false`, so an absent flag reads as "may declare them" |
-| `tablesAreDerivedGroupings` | `boolean?` | Whether the relation-shaped rows of this provider are objects the engine holds, or groupings this server derived from a bounded scan. `true` on Redis, LibreDB and etcd only. Where it is true the schema explorer hides the items that *address* the row, `Profile Table`, `Generate Count Query` and both per-row maintenance items, all of which name the row to a route that needs a real object, and keeps the ones that merely name it (`Select`, `Generate`, `Copy Name`, `Generate Code`). It does not gate `Generate Test Data`: since #1085 (decision D-M) both row menus offer that item only where the kind of the row declares `acceptsRowWrites` and the engine declares `supportsTestDataGeneration` (`offersTestDataGeneration`, #1468). With `keyScan` beside it, it is also one half of the gate on `Browse Keys`, the row-menu item that opens the key-space panel with the row's own name as its pattern: a glob under `keyScan.pattern: "glob"` and a bare prefix under `"prefix"`: a prefix is only a glob on an engine whose rows are prefixes. The agent layer states it to a plan run in one sentence. Consumers gate on `=== true`, so an absent flag reads as "ordinary objects" |
+| `tablesAreDerivedGroupings` | `boolean?` | Whether the relation-shaped rows of this provider are objects the engine holds, or groupings this server derived from a bounded scan. `true` on Redis, LibreDB and etcd only. Where it is true the schema explorer hides the items that *address* the row, `Profile Table`, `Generate Count Query` and both per-row maintenance items, all of which name the row to a route that needs a real object, and keeps the ones that merely name it (`Select`, `Generate`, `Copy Name`, `Generate Code`). It does not gate `Generate Test Data`: since #1085 (decision D-M) both row menus offer that item only where the kind of the row declares `acceptsRowWrites` and the engine declares `supportsTestDataGeneration` (`offersTestDataGeneration`, #1468). With `keyScan` beside it, it is also one half of the gate on `Browse Keys`, the row-menu item that opens the key-space panel with the row's own name as its pattern: a glob under `keyScan.pattern: "glob"` and a bare prefix under `"prefix"`: a prefix is only a glob on an engine whose rows are prefixes. The agent layer states it to a plan run in one sentence. Browse Keys is also offered on rows of `keyScan.levels.rootKind`, handing the panel `<name><separator>`, on an engine with no container level. Consumers gate on `=== true`, so an absent flag reads as "ordinary objects" |
 | `enforcesReadOnly` | `true?` | Whether this provider refuses every write, object edit and maintenance operation before any request while the connection's `readOnly` is true, or while it was opened with `ProviderExecutionContext.readOnly`, naming the read-only mode in the refusal. Nothing under `src/` reads the field: the seed schema, `assertReadOnlyHonoured` in `factory.ts` and the connection form decide before a provider exists, so they read `READ_ONLY_ENFORCED` in `src/lib/db/compatibility.ts`, and `tests/unit/db/read-only-enforced-capability.test.ts` holds that map equal to this declaration for every type-id. Only the literal `true` is declared, so an absent flag reads as "a read-only connection is refused here" (#1089) |
 | `readsFileAccessPosture` | `true?` | Whether this provider opens its editor handle under the server-derived file-access posture, `ProviderExecutionContext.allowExternalFileAccess` (only DuckDB does, opening a denied handle with `enable_external_access: 'false'`); nothing under `src/` reads the field, because `providerCacheKey` and `findOpenSingleWriterProvider` key and lend handles by posture from `READS_FILE_ACCESS_POSTURE` in `src/lib/db/compatibility.ts`, which `tests/unit/db/reads-file-access-posture-capability.test.ts` holds equal to this declaration for every type-id, so an engine that starts reading the posture sets both, and only the literal `true` is declared, so an absent flag reads as "every editor handle opens alike" |
+| `resumesBilledCompute` | `true?` | Whether a request to this connection can resume compute the engine bills for, such as a suspended Databend Cloud warehouse. Where it is true Studio sends the connection no connection pulse (the header shows "not checked") and no admin fleet health check (the row answers `not-checked`), and the monitoring auto-refresh toggle carries a sentence saying each refresh keeps the billed compute running; auto-refresh stays off until the user starts it, as it does for every provider, and then polls on its timer. A request the user makes still runs and still resumes the compute. Read from an unconnected provider, so it answers before any connect. `tests/unit/db/resumes-billed-compute-capability.test.ts` holds every shipped provider without it until an engine that bills a resume declares it. Only the literal `true` is declared, so an absent flag reads as "a request costs nothing to send" |
 | `supportsMaintenance` | `boolean` | Whether maintenance API accepts requests for this provider |
 | `maintenanceOperations` | `MaintenanceOperation[]` | Which global cards and per-table buttons the admin Operations tab renders. `/api/db/maintenance` rejects anything not in this list, so a surface that ignored it could only offer a control answering HTTP 400. Both row menus read it too, through `maintenanceControl()` (#496): a per-row maintenance item is offered only for an operation declared here, and not where its `maintenanceOperationSpecs` entry sets `perEntity: false`. Both offer such an item to an admin only, and the schema explorer also withholds it from a derived grouping (`tablesAreDerivedGroupings`) |
 | `supportsConnectionString` | `boolean` | Used for future connection validation logic |
@@ -871,7 +880,7 @@ For the authoritative, code-verified reference for each shipped provider (extend
 driver, pooling, capabilities, labels, `prepareQuery` behaviour, and limitations), see the prime
 docs — they are the single source of truth and are kept in sync with the code:
 
-**[docs/providers/](./providers/README.md)** → postgres · mysql · oracle · db2 · mssql · sqlite · libsql · duckdb · redis · mongodb · couchbase · clickhouse · druid · elasticsearch · opensearch · trino · cassandra · prometheus · influxdb · influxdb3 · kafka · etcd · neo4j · milvus · qdrant · oxia · libredb
+**[docs/providers/](./providers/README.md)** → postgres · mysql · oracle · db2 · mssql · sqlite · libsql · duckdb · redis · mongodb · couchbase · clickhouse · druid · elasticsearch · opensearch · trino · cassandra · prometheus · influxdb · influxdb3 · kafka · etcd · neo4j · milvus · qdrant · oxia · databend · libredb
 
 When implementing a new provider, the closest existing analogue is the best template: a pooled SQL
 provider (postgres/mysql), an embedded SQL provider (sqlite), a non-SQL provider (mongodb/redis), a
@@ -992,8 +1001,8 @@ The integration points, all of which need an entry. This is the list the Strateg
       published engine count silently undercount; it is listed here because the count in `README.md`
       and `docs/BRAND_MESSAGING.md` is derived from it and has to move in the same PR
 - [ ] `package.json` — the driver, **if** it needs one. A driver-free provider leaves it untouched, and
-      fourteen shipped ids do: `couchbase`, `clickhouse`, `druid`, `elasticsearch`, `opensearch`, `trino`,
-      `libsql`, `sqlite`, `prometheus`, `qdrant`, `milvus`, `influxdb`, `influxdb3` and `oxia`
+      fifteen shipped ids do: `couchbase`, `clickhouse`, `druid`, `elasticsearch`, `opensearch`, `trino`,
+      `libsql`, `sqlite`, `prometheus`, `qdrant`, `milvus`, `influxdb`, `influxdb3`, `oxia` and `databend`
       each add nothing here (`milvus` and `oxia` only extend the `//dependencies` note)
 - [ ] `database-compose.yml` — a service, so the next person can repeat the live pass. A distributed
       engine contributes a `profiles: [...]` set instead, as Druid's seven services do, so the default
@@ -1138,8 +1147,8 @@ Run them before the first edit and again before the commit, and re-derive each h
 
 ```bash
 OUT=(docs CLAUDE.md CONTRIBUTING.md 'README*.md' DOCKERHUB.md snap packaging desktop deploy charts/libredb-studio operator/config e2e ':!docs/BACKLOG.md' ':!docs/llms')
-git grep -n -I -i -E '\b(eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|twenty[- ](one|two|three|four|five|six|seven|eight|nine)|forty[- ](four|five|six|seven|eight|nine)|fifty|fifty[- ](one|two|three|four))\b|\b(1[0-9]|2[0-9]|4[0-9]|5[0-4]) (database backends|database engines|engines|type-ids|providers|drivers)\b|十[七八九]|二十[一二三四五六七八]?|四十[四五六七八九]|五十[一二三四]?|Diecisiete|Dieciocho|Diecinueve|Veinte|veinte|veintiuno|veintidós|veintitrés|veinticinco|veintiséis|veintisiete|veintiocho|cincuenta y (tres|cuatro)|1[789]の|2[0-7]の|सत्रह|अठारह|उन्नीस|बीस|इक्कीस|बाईस|तेईस|पच्चीस|छब्बीस|सत्ताईस|سترہ|اٹھارہ|انیس|بیس|اکیس|بائیس|تئیس|پچیس|چھبیس|ستائیس|Dezoito|Dezenove|Vinte|vinte e (um|dois|três|cinco|seis|sete)|cinquenta e (três|quatro)|Восемнадцат|Девятнадцат|Двадцат|пятьдесят (три|четыре)' -- "${OUT[@]}"   # G1
-git grep -n -I -E 'Oxia|oxia' -- "${OUT[@]}"   # G2, the closest earlier engine (Oxia, for the next provider)
+git grep -n -I -i -E '\b(eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|twenty[- ](one|two|three|four|five|six|seven|eight|nine)|forty[- ](four|five|six|seven|eight|nine)|fifty|fifty[- ](one|two|three|four))\b|\b(1[0-9]|2[0-9]|4[0-9]|5[0-4]) (database backends|database engines|engines|type-ids|providers|drivers)\b|十[七八九]|二十[一二三四五六七八]?|四十[四五六七八九]|五十[一二三四]?|Diecisiete|Dieciocho|Diecinueve|Veinte|veinte|veintiuno|veintidós|veintitrés|veinticinco|veintiséis|veintisiete|veintiocho|cincuenta y (tres|cuatro)|1[789]の|2[0-8]の|सत्रह|अठारह|उन्नीस|बीस|इक्कीस|बाईस|तेईस|पच्चीस|छब्बीस|सत्ताईस|अट्ठाईस|سترہ|اٹھارہ|انیس|بیس|اکیس|بائیس|تئیس|پچیس|چھبیس|ستائیس|اٹھائیس|Dezoito|Dezenove|Vinte|vinte e (um|dois|três|cinco|seis|sete|oito)|cinquenta e (três|quatro)|Восемнадцат|Девятнадцат|Двадцат|пятьдесят (три|четыре)' -- "${OUT[@]}"   # G1
+git grep -n -I -E 'Databend|databend' -- "${OUT[@]}"   # G2, the closest earlier engine (Databend, for the next provider)
 git grep -n -I -i -E 'redis and libredb|redis, libredb|libredb and redis|mongodb and redis|mongodb, redis|redis and mongodb|dialect of (its|their) own|queryDialect' -- "${OUT[@]}"   # G3
 git grep -n -I -E 'Redpanda|redpanda' -- "${OUT[@]}"   # G4, the latest relative
 ```

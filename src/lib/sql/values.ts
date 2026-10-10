@@ -106,6 +106,10 @@ const LITERAL_ESCAPE: Record<DatabaseType, LiteralEscape> = {
   // reads its literals the way MySQL does, and this row is not an inference from that
   // lineage but the four probes above.
   opensearch: "double-and-backslash",
+  // Databend reads both escapes in a single-quoted string in every one of its five `sql_dialect`s: a doubled quote
+  // is one quote and a backslash escapes the next character, so it is doubled first (design 5.1). The live round
+  // trip of the escaping corpus, `INSERT ... VALUES` included, passed on the pinned image (L4).
+  databend: "double-and-backslash",
   // SQL++ spells its literals the way JSON does — `char ::= unicode-character |
   // '\' ( '\' | '"' | "'" | 'b' | 'f' | 'n' | 'r' | 't' | 'u' hex hex hex hex )`.
   // Doubling is not in that grammar, so a doubled quote is not one literal there.
@@ -153,6 +157,32 @@ export function quoteLiteral(value: string, dialect: DatabaseType | undefined): 
   // also double the one this function just added in front of a quote.
   const escaped = value.replace(/\\/g, "\\\\");
   return escape === "backslash" ? `'${escaped.replace(/'/g, "\\'")}'` : `'${escaped.replace(/'/g, "''")}'`;
+}
+
+/**
+ * The literal for a date or a timestamp a generator writes as text: `YYYY-MM-DD` for a date
+ * and `YYYY-MM-DD HH24:MI:SS` for a timestamp.
+ *
+ * Oracle reads a quoted string in a date position through the session's `NLS_DATE_FORMAT`,
+ * `DD-MON-RR` by default, and refuses the ISO text with `ORA-01861: literal does not match
+ * format string` (#1400, on Oracle 23.26.3.0.0; the SQL export measured the same refusal for
+ * all four date types, `docs/providers/oracle.md`). So the value goes through `TO_DATE` or
+ * `TO_TIMESTAMP` with a mask that spells the text's own form, as the export writes the same
+ * types, and the session's format moves nothing. Text that is not in that form is quoted as
+ * it is: the mask would refuse it, and a plain literal says what the caller had.
+ *
+ * Every other dialect gets the quoted text it got before #1400. That is the measured status
+ * quo, not a claim that the text is right everywhere, which is why this is one arm and not a
+ * total map like `LITERAL_ESCAPE`: a dialect found to refuse the text gets its own arm here.
+ */
+export function temporalLiteral(text: string, kind: "date" | "timestamp", dialect: DatabaseType | undefined): string {
+  if (dialect !== "oracle") return quoteLiteral(text, dialect);
+  if (kind === "date") {
+    return /^\d{4}-\d{2}-\d{2}$/.test(text) ? `TO_DATE('${text}', 'YYYY-MM-DD')` : quoteLiteral(text, dialect);
+  }
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)
+    ? `TO_TIMESTAMP('${text}', 'YYYY-MM-DD HH24:MI:SS')`
+    : quoteLiteral(text, dialect);
 }
 
 /**

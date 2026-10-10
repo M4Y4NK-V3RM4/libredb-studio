@@ -58,6 +58,7 @@ mock.module("@/components/object-tree", () => ({
         "data-connection": String(connection?.id ?? "none"),
         "data-levels": String(capabilities?.containerLevels?.length ?? "none"),
         "data-deferred": String(props.deferred ?? false),
+        "data-deferred-billed": String(props.deferredForBilledCompute ?? false),
         "data-has-load": String(props.onLoad !== undefined),
         "data-actions": Object.keys((props.actions as Record<string, unknown>) ?? {})
           .sort()
@@ -139,6 +140,7 @@ import React from "react";
 
 import { mockPostgresConnection, mockMySQLConnection } from "../../fixtures/connections";
 import type { ProviderMetadata } from "@/hooks/use-provider-metadata";
+import { connectionPulseTitle } from "@/hooks/use-connection-pulse";
 
 // ---- Load the component under test AFTER all mock.module registrations ----
 // A static import would be hoisted and evaluate the real module tree
@@ -328,6 +330,18 @@ describe("Sidebar", () => {
 
     expect(getByTestId("object-tree").getAttribute("data-deferred")).toBe("true");
     expect(getByTestId("object-tree").getAttribute("data-has-load")).toBe("true");
+    expect(getByTestId("object-tree").getAttribute("data-deferred-billed")).toBe("false");
+  });
+
+  // CL-CORE-2: the shell holds a restored connection whose requests resume billed compute, and says why.
+  test("a connection held for billed compute hands the tree the deferral, its reason and the load action", () => {
+    const onLoadObjects = mock(() => {});
+    const props = createDefaultProps({ objectScanDeferred: true, deferredForBilledCompute: true, onLoadObjects });
+    const { getByTestId } = render(<Sidebar {...props} />);
+
+    expect(getByTestId("object-tree").getAttribute("data-deferred")).toBe("true");
+    expect(getByTestId("object-tree").getAttribute("data-deferred-billed")).toBe("true");
+    expect(getByTestId("object-tree").getAttribute("data-has-load")).toBe("true");
   });
 
   /**
@@ -503,6 +517,36 @@ describe("Sidebar", () => {
     expect(queryByText("Connected")).not.toBeNull();
   });
 
+  /**
+   * CL-CORE-4: the header said "Not checked" over a connection Studio sends no health check, while this footer drew a
+   * pulsing green "Connected" under it. The footer reads the same pulse state as the header.
+   */
+  test("under a connection Studio does not check, the footer says Not checked, with a still neutral dot", () => {
+    const { container, queryByText, getByText } = render(
+      <Sidebar {...createDefaultProps({ connectionPulse: "not-checked" })} />,
+    );
+
+    expect(queryByText("Connected")).toBeNull();
+    const status = container.querySelector('[data-testid="sidebar-connection-status"]');
+    expect(status?.getAttribute("title")).toBe(connectionPulseTitle("not-checked"));
+    expect(status?.textContent).toBe("Not checked");
+    expect(getByText("Not checked")).not.toBeNull();
+    const dot = status?.querySelector("div");
+    expect(dot?.className).not.toContain("animate-pulse");
+    expect(dot?.className).not.toContain("green");
+  });
+
+  test("control: a checked connection, or a shell with no pulse, keeps the pulsing Connected", () => {
+    for (const connectionPulse of ["healthy", null, undefined]) {
+      const { container, queryByText, unmount } = render(<Sidebar {...createDefaultProps({ connectionPulse })} />);
+      expect(queryByText("Connected"), String(connectionPulse)).not.toBeNull();
+      expect(queryByText("Not checked")).toBeNull();
+      const dot = container.querySelector('[data-testid="sidebar-connection-status"] div');
+      expect(dot?.className).toContain("animate-pulse");
+      unmount();
+    }
+  });
+
   test("no ERD button on a connection declaring Cypher, whose relationship types are no tables (SR20)", () => {
     const cypher = { capabilities: { ...oneLevel, queryLanguage: "cypher" } } as unknown as ProviderMetadata;
     const { container, unmount } = render(<Sidebar {...createDefaultProps({ metadata: cypher })} />);
@@ -576,6 +620,43 @@ describe("Sidebar", () => {
     // The tree is what opens, because the panel is an addition rather than a replacement.
     expect(withWalk.queryByTestId("object-tree")).not.toBeNull();
     expect(withWalk.queryByTestId("key-browser")).toBeNull();
+  });
+
+  /**
+   * #1169: DEFERRING THE CATALOG DOES NOT DEFER THE WALK, and the switch says so.
+   *
+   * `skipObjectScan` (#765) promises that opening a connection reads NOTHING, and that promise holds
+   * here for the reason it holds everywhere else: the key panel is what reads a key space, and the
+   * panel mounts only when the reader chooses Keys. So the tab pair stays, because the switch itself
+   * is not a read, and the walk that follows the choice is a bounded sample that says it is one.
+   *
+   * Both halves are pinned together on purpose: the switch surviving the deferral is only correct
+   * while the panel is still absent before the choice, so a change that mounted the panel eagerly
+   * (a read on connect under another name) fails here rather than in the browser.
+   */
+  test("a deferred connection that declares keyScan keeps the switch, and mounts no walk until Keys is chosen", () => {
+    const onLoadObjects = mock(() => {});
+    const props = createDefaultProps({
+      metadata: walkMetadata(),
+      objectScanDeferred: true,
+      onLoadObjects,
+    });
+    const { getByRole, queryByTestId } = render(<Sidebar {...props} />);
+
+    // The engine's declaration decides the switch: the deferral is about the catalog, and this
+    // engine has none to read.
+    expect(getByRole("tab", { name: "Objects" })).toBeDefined();
+    expect(getByRole("tab", { name: "Keys" })).toBeDefined();
+
+    // The deferral still reaches the tree, with its load action.
+    expect(queryByTestId("object-tree")?.getAttribute("data-deferred")).toBe("true");
+    expect(queryByTestId("object-tree")?.getAttribute("data-has-load")).toBe("true");
+
+    // Nothing has read a key: the panel IS the walk, and it is not mounted until Keys is chosen.
+    expect(queryByTestId("key-browser")).toBeNull();
+
+    fireEvent.click(getByRole("tab", { name: "Keys" }));
+    expect(queryByTestId("key-browser")).not.toBeNull();
   });
 
   test("hands the panel the connection and the declared batch size when Keys is chosen", () => {
@@ -757,6 +838,41 @@ describe("Sidebar", () => {
       capturedBrowseKeys?.({ name: "/-a b'\"#$[x]/*", path: ["/-a b'\"#$[x]/*"] });
     });
     expect(queryByTestId("key-browser")?.getAttribute("data-request")).toBe("/-a b'\"#$[x]/");
+  });
+
+  test("hands a bucket row's name and the separator to the Keys view under a level declaration", () => {
+    const props = createDefaultProps({
+      activeConnection: mockPostgresConnection,
+      // A level walk under `/` with no container level: what an object store declares, its buckets being
+      // the key space's first segment.
+      metadata: {
+        capabilities: {
+          queryLanguage: "json",
+          containerLevels: [],
+          keyScan: {
+            defaultCount: 500,
+            maxCount: 1000,
+            separator: "/",
+            cursor: "opaque",
+            pattern: "prefix",
+            totalScope: "none",
+            levels: { rootKind: "bucket" },
+          },
+        },
+      } as unknown as ProviderMetadata,
+      objectActions: { onGenerateSelect: () => {} },
+    });
+    const { queryByTestId, getByRole } = render(<Sidebar {...props} />);
+
+    act(() => {
+      capturedBrowseKeys?.({ name: "sales", path: ["sales"] });
+    });
+
+    // The bucket's folder, `sales/`, and no database: the panel's first request for it carries the
+    // pattern and `level: true` (KeyBrowser.test.tsx, "opens a handed-over prefix ...").
+    expect(queryByTestId("key-browser")?.getAttribute("data-request")).toBe("sales/");
+    expect(queryByTestId("key-browser")?.getAttribute("data-request-database")).toBe("none");
+    expect(getByRole("tab", { name: "Keys" }).getAttribute("aria-selected")).toBe("true");
   });
 
   /**

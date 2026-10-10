@@ -27,6 +27,8 @@ let mockCollections: { name: string; type: string }[] = [
   { name: "orders", type: "collection" },
 ];
 let mockCurrentOps: Record<string, unknown>[] = [];
+/** Every `killOp` command the admin database received, so a test can read what Terminate sent (#1424). */
+let killOpCommands: Record<string, unknown>[] = [];
 
 // ----------------------------------------------------------------------------
 // Object-surface state (#789)
@@ -112,6 +114,38 @@ let lastMongoUri = "";
 // The options object the driver received. TLS is observable nowhere else: the
 // `MongoClient` constructor is the only place it is stated.
 let lastMongoOptions: Record<string, unknown> = {};
+
+// ----------------------------------------------------------------------------
+// #1573: the connect deadline. The mock client has to behave like the driver on
+// the two paths the deadline opens: it must RELAY the heartbeat failure the way
+// `Topology` relays `serverHeartbeatFailed` to the client, and its `close()` must
+// be countable, because "no client outlives a timed-out connect" is the second
+// acceptance criterion of the issue.
+// ----------------------------------------------------------------------------
+
+/**
+ * How the next `MongoClient.connect()` behaves. `undefined` connects at once; a
+ * function returns its promise, which the deadline tests leave pending the way a
+ * server-selection loop retries a refused port until its own 30 s bound.
+ */
+let mockConnectBehavior: (() => Promise<void>) | undefined;
+/**
+ * The failure the monitoring delivered, delivered to every `serverHeartbeatFailed`
+ * listener the provider registered on the client, exactly as the driver does.
+ */
+let mockHeartbeatFailure: Error | undefined;
+/** Every `close()` the mocked clients received, per client instance, in order. */
+let mockClientCloses: number[] = [];
+
+/** Delivers the configured heartbeat failure the way the driver relays it. */
+function emitMockHeartbeatFailure(): void {
+  if (mockHeartbeatFailure === undefined) return;
+  // The event shape `ServerHeartbeatFailedEvent` carries: the refusal is on `.failure`.
+  const event = { failure: mockHeartbeatFailure };
+  for (const listener of mockHeartbeatListeners) listener(event);
+}
+/** The provider's heartbeat listeners on the current client, as `on()` registered them. */
+let mockHeartbeatListeners: ((event: { failure: Error }) => void)[] = [];
 
 const createMockCursor = (data: Record<string, unknown>[]) => {
   const cursor = {
@@ -354,6 +388,10 @@ const createMockDb = (dbName = "testdb") => ({
     serverStatus: async () => mockServerStatus(),
     command: async (cmd: Record<string, unknown>) => {
       if (cmd.currentOp) return { inprog: mockCurrentOps };
+      if (cmd.killOp) {
+        killOpCommands.push(cmd);
+        return { info: "attempting to kill op", ok: 1 };
+      }
       if (cmd.buildInfo) return { version: "7.0.0" };
       if (cmd.listDatabases) {
         lastListDatabasesCommand = cmd;
@@ -401,20 +439,40 @@ mock.module("mongodb", () => ({
   MongoClient: class MockMongoClient {
     private _uri: string;
     private _opts: unknown;
+    private _closes = 0;
 
     constructor(uri: string, opts?: unknown) {
       this._uri = uri;
       this._opts = opts;
       lastMongoUri = uri;
       lastMongoOptions = (opts ?? {}) as Record<string, unknown>;
+      mockClientCloses.push(0);
+    }
+
+    // The driver's client is an event emitter and `Topology` relays the monitor's
+    // `serverHeartbeatFailed` to it (`constants.js` SERVER_RELAY_EVENTS), which is
+    // where the provider reads the refusal the deadline reports (#1573).
+    on(event: string, listener: (...args: never[]) => void) {
+      if (event === "serverHeartbeatFailed") {
+        mockHeartbeatListeners.push(listener as (event: { failure: Error }) => void);
+      }
+      return this;
     }
 
     async connect() {
-      // noop — connection established
+      // The heartbeat failure lands while the connect is still selecting, as it does
+      // on a closed port: the monitor's connect attempt fails at once and the
+      // selection loop keeps retrying (#1458). Deferred to a microtask because the
+      // provider registers its `serverHeartbeatFailed` listener between the
+      // constructor and this call, and the monitor on a real client fires only once
+      // the topology starts connecting.
+      queueMicrotask(() => emitMockHeartbeatFailure());
+      return mockConnectBehavior?.();
     }
 
     async close() {
-      // noop — connection closed
+      this._closes++;
+      mockClientCloses[mockClientCloses.length - 1] = this._closes;
     }
 
     db(name?: string) {
@@ -643,6 +701,10 @@ function resetObjectSurfaceMocks(): void {
   lastListDatabasesCommand = {};
   listDatabasesCommands = [];
   mockListDatabasesRefusal = undefined;
+  mockConnectBehavior = undefined;
+  mockHeartbeatFailure = undefined;
+  mockClientCloses = [];
+  mockHeartbeatListeners = [];
 }
 
 function useObjectFixture(): void {
@@ -678,6 +740,7 @@ describe("MongoDBProvider", () => {
       { name: "orders", type: "collection" },
     ];
     mockCurrentOps = [];
+    killOpCommands = [];
     mockServerStatus = defaultServerStatus;
     mockDbStats = defaultDbStats;
     mockCollStatsByCollection = {};
@@ -922,6 +985,118 @@ describe("MongoDBProvider", () => {
         serverSelectionTimeoutMS: 30000,
       });
     });
+
+    // #1573: the request that starts a connect carries its own deadline, `queryTimeout`,
+    // which `connect()` used not to read. The driver's server selection waits out its own
+    // 30 s bound on a closed port (#1458), so Test Connection spun past the request's
+    // query timeout. The contract here is pinned against a mocked driver; the wall-clock
+    // measurement against the real one is `mongodb-server-selection.test.ts`.
+    describe("the request's query timeout bounds connect() (#1573)", () => {
+      test("a connect that outlives queryTimeout is refused, the client closed, and the refusal names the driver's error", async () => {
+        mockConnectBehavior = () => new Promise<void>(() => {});
+        mockHeartbeatFailure = new Error("connect ECONNREFUSED 127.0.0.1:27999");
+        const deadlineProvider = new MongoDBProvider({ ...baseConfig }, { queryTimeout: 25 });
+
+        const started = Date.now();
+        let refusal = "";
+        try {
+          await deadlineProvider.connect();
+          refusal = "connect() returned while its driver was still selecting";
+        } catch (error) {
+          refusal = error instanceof Error ? error.message : String(error);
+        }
+        const elapsed = Date.now() - started;
+
+        // The deadline is queryTimeout (25 ms here), not the driver's 30 s: the margin
+        // is for a slow machine, the defect waits the driver's own bound out.
+        expect(elapsed).toBeLessThan(5000);
+        expect(refusal).toContain("ECONNREFUSED");
+        // No client outlives a timed-out connect: close() was called on it.
+        expect(mockClientCloses[0]).toBeGreaterThan(0);
+
+        await deadlineProvider.disconnect();
+      }, 10_000);
+
+      test("a later connect() starts fresh after a timed-out one", async () => {
+        let release: (() => void) | undefined;
+        mockConnectBehavior = () => new Promise<void>((resolve) => (release = resolve));
+        mockHeartbeatFailure = new Error("connect ECONNREFUSED 127.0.0.1:27999");
+        const deadlineProvider = new MongoDBProvider({ ...baseConfig }, { queryTimeout: 25 });
+
+        await expect(deadlineProvider.connect()).rejects.toThrow(/ECONNREFUSED/);
+        // The connect settles after the deadline (the SRV window: `_connect` resolves
+        // SRV before it creates the topology, so a close during the lookup is a no-op)
+        // and the client is closed again once it does: the close count goes from 1
+        // (the deadline path) to 2 (the settle), pinning the second close.
+        expect(mockClientCloses.length).toBe(1);
+        expect(mockClientCloses[0]).toBe(1);
+        release?.();
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(mockClientCloses.length).toBe(1);
+        expect(mockClientCloses[0]).toBe(2);
+
+        // A fresh connect succeeds on the same provider, on a new client.
+        mockConnectBehavior = undefined;
+        await deadlineProvider.connect();
+        expect(deadlineProvider.isConnected()).toBe(true);
+        expect(mockClientCloses.length).toBe(2);
+
+        await deadlineProvider.disconnect();
+      }, 10_000);
+
+      test("a timed-out connect clears the provider's client so a later disconnect() closes nothing", async () => {
+        // Pins `this.client = null` on the timeout path (#1573). Deleting that clear
+        // leaves the timed-out client on the provider: every query is still refused
+        // (the state is not connected), but a later `disconnect()` finds the stale
+        // client and closes it a third time.
+        let release: (() => void) | undefined;
+        mockConnectBehavior = () => new Promise<void>((resolve) => (release = resolve));
+        mockHeartbeatFailure = new Error("connect ECONNREFUSED 127.0.0.1:27999");
+        const deadlineProvider = new MongoDBProvider({ ...baseConfig }, { queryTimeout: 25 });
+
+        await expect(deadlineProvider.connect()).rejects.toThrow(/ECONNREFUSED/);
+        release?.();
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        // The deadline closed the client once and the settle closed it again.
+        expect(mockClientCloses.length).toBe(1);
+        expect(mockClientCloses[0]).toBe(2);
+
+        // With the clear, `disconnect()` is a no-op: the client it would close is
+        // already gone. Without it, the stale client takes a third close.
+        await deadlineProvider.disconnect();
+        expect(mockClientCloses.length).toBe(1);
+        expect(mockClientCloses[0]).toBe(2);
+      }, 10_000);
+
+      test("a failed connect leaves no half-open client behind", async () => {
+        // The driver's own refusal, before any deadline: `connect()` used to keep
+        // `this.client` set while `this.db` stayed null, so a later `connect()` found
+        // the half-open one and returned as if it were connected (#1573).
+        mockConnectBehavior = async () => {
+          throw new Error("connect ECONNREFUSED 127.0.0.1:27999");
+        };
+        const failingProvider = new MongoDBProvider({ ...baseConfig });
+        await expect(failingProvider.connect()).rejects.toThrow(/ECONNREFUSED/);
+        expect(mockClientCloses.length).toBe(1);
+        expect(mockClientCloses[0]).toBeGreaterThan(0);
+
+        mockConnectBehavior = undefined;
+        await failingProvider.connect();
+        expect(failingProvider.isConnected()).toBe(true);
+        expect(mockClientCloses.length).toBe(2);
+
+        await failingProvider.disconnect();
+      });
+
+      test("a connect within the deadline is untouched: one client, no close", async () => {
+        const fastProvider = new MongoDBProvider({ ...baseConfig }, { queryTimeout: 10000 });
+        await fastProvider.connect();
+        expect(fastProvider.isConnected()).toBe(true);
+        expect(mockClientCloses.length).toBe(1);
+        expect(mockClientCloses[0]).toBe(0);
+        await fastProvider.disconnect();
+      });
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -939,6 +1114,7 @@ describe("MongoDBProvider", () => {
         vacuum: { label: "Compact Collection", perEntity: true, global: true },
         analyze: { label: "Validate Collection", perEntity: true, global: true },
         check: { label: "Check Collection", perEntity: true, global: false },
+        kill: { label: "Kill Operation", perEntity: false, global: false },
       });
       expect(Object.keys(caps.maintenanceOperationSpecs ?? {}).sort()).toEqual([...caps.maintenanceOperations].sort());
       // MongoDB's "Compact Collection" really is the `vacuum` it declares, so the
@@ -1636,6 +1812,17 @@ describe("MongoDBProvider", () => {
       await expect(provider.runMaintenance("flush" as never)).rejects.toThrow();
     });
 
+    // #1424: `kill` was implemented and undeclared, so the route refused the Terminate it backs.
+    test("kill is declared and sends killOp with the row's opid", async () => {
+      expect(provider.getCapabilities().maintenanceOperations).toContain("kill");
+
+      const result = await provider.runMaintenance("kill", "64517");
+
+      expect(killOpCommands).toEqual([{ killOp: 1, op: 64517 }]);
+      expect(result.success).toBe(true);
+      expect(result.message).toBe("Killed operation: 64517");
+    });
+
     // #1408: the whole-database loops ran `validate` on every `listCollections()` entry,
     // views included, and the server refuses it on a view - so the first view aborted
     // the run with a 500. Compact swallowed every error and answered a bare success.
@@ -2042,6 +2229,28 @@ describe("MongoDBProvider", () => {
       expect(sessions[3].duration).toBe("2h 1m");
     });
 
+    // #1424: `currentOp` with `$all` also answers rows `killOp` cannot end. Measured on MongoDB 9.0.2 with only
+    // Studio connected: 39 rows. 1 was Studio's own `currentOp`, 34 were server threads with no opid, 2 were
+    // Studio's own idle connections with no opid, and 2 were server jobs (`Checkpointer`, `JournalFlusher`)
+    // whose opid `killOp` answered `ok: 1` for while both kept running.
+    test("marks a row with no opid, with no client, or that is this read itself, as not terminable", async () => {
+      mockCurrentOps = [
+        { opid: 64517, client: "10.0.0.1:4444", active: true, command: { insert: "t" }, microsecs_running: 1000 },
+        { client: "10.0.0.1:4445", active: false },
+        { desc: "TTLMonitor", active: false },
+        { opid: 3072, desc: "JournalFlusher", active: true },
+        { opid: 154627, client: "10.0.0.1:4446", active: true, command: { currentOp: 1, $all: true } },
+      ];
+      const sessions = await provider.getActiveSessions();
+      expect(sessions.map((s) => [s.pid, s.terminable])).toEqual([
+        [64517, undefined],
+        ["N/A", false],
+        ["N/A", false],
+        [3072, false],
+        [154627, false],
+      ]);
+    });
+
     test("respects the limit option", async () => {
       mockCurrentOps = [
         { opid: 1, microsecs_running: 1000 },
@@ -2060,6 +2269,23 @@ describe("MongoDBProvider", () => {
   describe("getTableStats()", () => {
     beforeEach(async () => {
       await provider.connect();
+    });
+
+    test("skips system.* collections and keeps one whose name only starts with those letters", async () => {
+      // Monitoring listed `system.views` and `system.buckets.readings` while the tree hid both
+      // (#1428). The bucket here has no time-series parent, so the earlier duplicate-bucket
+      // check would have kept it; the reserved prefix is what drops it. `systemetrics` does
+      // not start with `system.` and is a collection a person created.
+      mockCollections = [
+        { name: "orders", type: "collection" },
+        { name: "system.views", type: "collection" },
+        { name: "system.buckets.readings", type: "collection" },
+        { name: "systemetrics", type: "collection" },
+      ];
+
+      const stats = await provider.getTableStats();
+
+      expect(stats.map((row) => row.tableName).sort()).toEqual(["orders", "systemetrics"]);
     });
 
     test("returns collection stats", async () => {

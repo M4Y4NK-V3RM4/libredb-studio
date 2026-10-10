@@ -1730,7 +1730,7 @@ Redis exposes a single maintenance operation:
 
 | Type | Behaviour |
 |------|-----------|
-| `analyze` | Runs `INFO` and reports the number of lines in the output as a snapshot. Non-destructive. |
+| `analyze` | Runs `INFO` and returns one row per `key:value` metric (`section`, `key`, `value`), parsed by `parseInfoResult`. The count in the message is that row count: section headers and blank lines are not metrics. The Operations tab renders the rows. Non-destructive. |
 | anything else | Throws `QueryError` (`Unsupported maintenance type for Redis`) |
 
 This is reflected in `getCapabilities().maintenanceOperations = ['analyze']`. The admin Operations
@@ -1738,6 +1738,11 @@ tab has gated each card on that list since #282, so it renders the analyze card 
 offered Redis a vacuum action; #427 changed the **wording** on that card, not the gate (§9). The
 schema explorer's **per-row** menu offers neither *"Key Info"* nor *"Memory Doctor"*, because a
 per-row action needs an addressable row and these rows are derived groupings (§5.3).
+
+No Terminate button renders on the session list either. The `CLIENT LIST` clients that
+`getActiveSessions()` returns were each offered one until #1424, and confirming answered `400
+Operation 'kill' not supported for this database. Supported: analyze` with the client still listed.
+Both session lists now draw it only where `kill` is declared.
 
 The admin Operations tab also renders this provider's own wording for the analyze card — *"Run
 Info"* / *"Server Info"* / *"Get Redis server information and statistics."* — instead of Postgres's

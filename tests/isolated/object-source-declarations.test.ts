@@ -74,6 +74,8 @@ import { EXTERNAL_DATABASE_TYPES, SHIPPED_DATABASE_TYPES } from "@/lib/db/compat
 import { createDatabaseProvider } from "@/lib/db/factory";
 import { declaredKinds, findKind } from "@/lib/db/object-kinds";
 import type { DatabaseObject, ObjectKindSpec, ProviderCapabilities } from "@/lib/db/types";
+import { containerDepth } from "@/lib/db/object-kinds";
+import { keyScanShape } from "@/lib/db/types";
 import type { DatabaseType } from "@/lib/types";
 import { CENSUS_CONNECTION } from "../helpers/census-connection";
 
@@ -154,6 +156,8 @@ const SOURCE_DECLARATIONS: Readonly<Record<DatabaseType, readonly string[]>> = O
   // Both kinds have a source, JSON under the declared language (DECISIONS O13): a shard's answer and a key's
   // record, serialised by the provider.
   oxia: ["shard/json", "key/json"],
+  // Every kind has a source (design 2.4), Databend's own SQL text.
+  databend: ["table/sql", "view/sql", "materialized_view/sql", "dynamic_table/sql"],
   libredb: [],
 });
 
@@ -243,9 +247,9 @@ describe("the fleet census of object source declarations", () => {
     // The population every assertion below iterates. If this were empty or short, each of those
     // loops would certify only the engines it happened to reach, so it is asserted first.
     expect([...CENSUS_TYPES].sort()).toEqual([...SHIPPED_DATABASE_TYPES].sort());
-    // EXTERNAL_DATABASE_TYPES.length (26 with db2, neo4j, milvus, qdrant, influxdb, influxdb3 and oxia) plus the embedded
-    // store.
-    expect(CENSUS_TYPES).toHaveLength(27);
+    // EXTERNAL_DATABASE_TYPES.length (27 with db2, neo4j, milvus, qdrant, influxdb, influxdb3, oxia and databend) plus
+    // the embedded store.
+    expect(CENSUS_TYPES).toHaveLength(28);
     expect(Object.keys(SOURCE_DECLARATIONS).sort()).toEqual([...SHIPPED_DATABASE_TYPES].sort());
   });
 
@@ -263,13 +267,13 @@ describe("the fleet census of object source declarations", () => {
     // `hasSource` moves between the two halves, so both halves must be pinned or the total alone
     // would still be satisfied. Neither half may be edited to match a build: if this fails, the
     // DECLARATION is wrong or the design's table is, and the repair is one of those two.
-    expect(UNCONNECTED_SOURCE_KINDS).toHaveLength(81);
-    expect(rows.filter((row) => row.kind.hasSource === true)).toHaveLength(81);
+    expect(UNCONNECTED_SOURCE_KINDS).toHaveLength(85);
+    expect(rows.filter((row) => row.kind.hasSource === true)).toHaveLength(85);
     // neo4j added four kinds, none source-bearing, db2 five source-bearing kinds and four others, milvus and
-    // qdrant one source-bearing kind each, influxdb and influxdb3 one kind each, neither source-bearing, and oxia
-    // two source-bearing kinds.
+    // qdrant one source-bearing kind each, influxdb and influxdb3 one kind each, neither source-bearing, oxia
+    // two source-bearing kinds, and databend four source-bearing kinds.
     expect(rows.filter((row) => row.kind.hasSource !== true)).toHaveLength(33);
-    expect(rows).toHaveLength(114);
+    expect(rows).toHaveLength(118);
   });
 
   test("the MariaDB branch declares two more, which an unconnected provider cannot show", async () => {
@@ -295,10 +299,10 @@ describe("the fleet census of object source declarations", () => {
       [],
     );
     expect(mariadbRows.filter((row) => row.kind.hasSource === true)).toHaveLength(8);
-    // 83 on a MariaDB connection against 81 unconnected: the design states both numbers because
+    // 87 on a MariaDB connection against 85 unconnected: the design states both numbers because
     // criterion 2's evidence method reads an unconnected provider and would otherwise
     // structurally exclude the two riskiest declarations in the phase.
-    expect(UNCONNECTED_SOURCE_KINDS.length + MARIADB_EXTRA_SOURCE_KINDS.length).toBe(83);
+    expect(UNCONNECTED_SOURCE_KINDS.length + MARIADB_EXTRA_SOURCE_KINDS.length).toBe(87);
   });
 
   /*
@@ -384,8 +388,8 @@ describe("the fleet census of object source declarations", () => {
         throw new Error(`the half-declaration guard never reached ${extra}, so it does not cover the MariaDB branch`);
       }
     }
-    // 114 unconnected kinds plus the MariaDB branch's eight.
-    expect(rows).toHaveLength(122);
+    // 118 unconnected kinds plus the MariaDB branch's eight.
+    expect(rows).toHaveLength(126);
 
     const halfDeclared = rows
       .filter((row) => row.kind.sourceLanguage !== undefined && row.kind.hasSource !== true)
@@ -442,6 +446,63 @@ function keyBrowserBreaches(type: string, capabilities: ProviderCapabilities): r
   }
   if (browsed.length > 0 && capabilities.keyScan === undefined) {
     breaches.push(`${type} declares ${ids} enumeratedBy "key-browser" and no keyScan, so no Keys panel enumerates it`);
+  }
+  return breaches;
+}
+
+/**
+ * THE LEVEL DECLARATION, held to its rules (Keys panel levels, spec 3.8).
+ *
+ * `keyScan.levels` says an engine lists its key space one level at a time. A level is a prefix and a
+ * separator, and a level page has no total, so `levels` needs `pattern: "prefix"`, a separator one
+ * UTF-16 code unit long and `totalScope: "none"`. `levels.rootKind` names the kind whose rows are the key space's first segment,
+ * so it must be a declared kind, a kind that draws rows (not one only the Keys panel enumerates), on an
+ * engine with no container level, where the Sidebar sends no `database` beside the pattern.
+ *
+ * `LEVEL_SCAN_TYPES` is the committed list of type ids that declare `levels`; the registration of an
+ * engine that declares it moves the list. The planted declarations, in the key-browser block below so
+ * they share its key-browser kind, show each rule refuses what it names.
+ */
+const LEVEL_SCAN_TYPES: readonly string[] = Object.freeze([]);
+
+/** The breaches of the level rules in one declaration, one sentence each. */
+function levelBreaches(type: string, capabilities: ProviderCapabilities): readonly string[] {
+  const keyScan = capabilities.keyScan;
+  const levels = keyScan?.levels;
+  if (keyScan === undefined || levels === undefined) return [];
+  const shape = keyScanShape(keyScan);
+  const breaches: string[] = [];
+  if (shape.pattern !== "prefix") {
+    breaches.push(
+      `${type} declares keyScan.levels on a walk whose pattern is not "prefix", and a level is a prefix and a separator`,
+    );
+  }
+  if (shape.totalScope !== "none") {
+    breaches.push(`${type} declares keyScan.levels with a total, and a level page has no total to count`);
+  }
+  // An empty separator is found in every key, so no level could ever end at one; a longer one can overlap
+  // itself or be cut by a prefix that ends inside it, and the panel would then draw an entry below the
+  // level the route judged it in.
+  if (shape.separator.length !== 1) {
+    breaches.push(
+      `${type} declares keyScan.levels with the separator ${JSON.stringify(shape.separator)}, and a level ends at a separator one UTF-16 code unit long`,
+    );
+  }
+  const id = levels.rootKind;
+  if (id !== undefined) {
+    const kind = findKind(capabilities, id);
+    if (kind === undefined) {
+      breaches.push(`${type} names keyScan.levels.rootKind "${id}", which it does not declare`);
+    } else if (kind.enumeratedBy !== undefined) {
+      breaches.push(
+        `${type} names the key-browser kind "${id}" as keyScan.levels.rootKind, and that kind draws no row to offer it on`,
+      );
+    }
+    if (containerDepth(capabilities) > 0) {
+      breaches.push(
+        `${type} names keyScan.levels.rootKind on an engine with a container level, and a root kind names the first segment of one key space`,
+      );
+    }
   }
   return breaches;
 }
@@ -504,6 +565,92 @@ describe("the key-browser declaration", () => {
     expect(keyBrowserBreaches("kv", keyValue([PREFIX, KEY], false))).toEqual([
       'kv declares key enumeratedBy "key-browser" and no keyScan, so no Keys panel enumerates it',
     ]);
+  });
+
+  describe("the level declaration", () => {
+    test("the fleet declares exactly the committed level types, and no declaration breaches the rules", async () => {
+      const fleet = await Promise.all(
+        CENSUS_TYPES.map(async (type) => ({
+          type,
+          capabilities: (await createDatabaseProvider(CENSUS_CONNECTION[type])).getCapabilities(),
+        })),
+      );
+      const declaring: readonly string[] = fleet
+        .filter(({ capabilities }) => capabilities.keyScan?.levels !== undefined)
+        .map(({ type }) => type);
+      const breaches = fleet.flatMap(({ type, capabilities }) => levelBreaches(type, capabilities));
+      expect(declaring).toEqual([...LEVEL_SCAN_TYPES]);
+      expect(breaches).toEqual([]);
+    });
+
+    // PLANTED declarations, because no engine in the fleet declares levels yet, so without them each rule
+    // would be certified by nothing. `KEY` is the key-browser kind the block above plants.
+    const BUCKET: ObjectKindSpec = { id: "bucket", role: "config", label: "Bucket", labelPlural: "Buckets" };
+    const LEVELS = {
+      defaultCount: 500,
+      maxCount: 1000,
+      separator: "/",
+      cursor: "opaque",
+      pattern: "prefix",
+      totalScope: "none",
+      levels: { rootKind: "bucket" },
+    } as const;
+    const store = (
+      keyScan: Record<string, unknown> = LEVELS,
+      extra: Record<string, unknown> = {},
+    ): ProviderCapabilities =>
+      ({
+        queryLanguage: "json",
+        containerLevels: [],
+        objectKinds: [BUCKET, KEY],
+        keyScan,
+        ...extra,
+      }) as unknown as ProviderCapabilities;
+
+    test("a declaration that keeps every rule has no breach, the control for the six below", () => {
+      expect(levelBreaches("store", store())).toEqual([]);
+    });
+
+    test("levels on a walk whose pattern is not prefix is refused by name", () => {
+      expect(levelBreaches("store", store({ ...LEVELS, pattern: "glob" }))).toEqual([
+        'store declares keyScan.levels on a walk whose pattern is not "prefix", and a level is a prefix and a separator',
+      ]);
+    });
+
+    test("levels with a separator that is not one UTF-16 code unit long is refused by name", () => {
+      for (const separator of ["", "::"]) {
+        expect(levelBreaches("store", store({ ...LEVELS, separator }))).toEqual([
+          `store declares keyScan.levels with the separator ${JSON.stringify(separator)}, and a level ends at a separator one UTF-16 code unit long`,
+        ]);
+      }
+    });
+
+    test("levels on a counted walk is refused by name", () => {
+      expect(levelBreaches("store", store({ ...LEVELS, totalScope: "walk" }))).toEqual([
+        "store declares keyScan.levels with a total, and a level page has no total to count",
+      ]);
+    });
+
+    test("a root kind the engine does not declare is refused by name", () => {
+      expect(levelBreaches("store", store({ ...LEVELS, levels: { rootKind: "vault" } }))).toEqual([
+        'store names keyScan.levels.rootKind "vault", which it does not declare',
+      ]);
+    });
+
+    test("a key-browser kind named as the root kind is refused by name", () => {
+      expect(levelBreaches("store", store({ ...LEVELS, levels: { rootKind: "key" } }))).toEqual([
+        'store names the key-browser kind "key" as keyScan.levels.rootKind, and that kind draws no row to offer it on',
+      ]);
+    });
+
+    test("a root kind on an engine with a container level is refused by name", () => {
+      const withLevel = store(LEVELS, {
+        containerLevels: [{ id: "schema", label: "Database", labelPlural: "Databases" }],
+      });
+      expect(levelBreaches("store", withLevel)).toEqual([
+        "store names keyScan.levels.rootKind on an engine with a container level, and a root kind names the first segment of one key space",
+      ]);
+    });
   });
 });
 

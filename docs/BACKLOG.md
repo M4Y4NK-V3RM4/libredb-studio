@@ -28,12 +28,12 @@ None of it is a GitHub issue.
 **Sections**
 
 - [SQL statement reading](#sql-statement-reading) — S2–S7 · 5
-- [Drivers and connections](#drivers-and-connections) — D1-D245, U17 · 149
+- [Drivers and connections](#drivers-and-connections) — D1-D260, U17 · 164
 - [Value interpolation](#value-interpolation) — V1
 - [Row editing](#row-editing) — R1–R3 · 3
-- [Studio UI and query execution](#studio-ui-and-query-execution) — X2-X26, U2-U96 · 87
+- [Studio UI and query execution](#studio-ui-and-query-execution) — X2-X27, U2-U108 · 99
 - [Dependencies](#dependencies) — P1-P9 · 7
-- [Documentation](#documentation) — DOC3-DOC18 · 15
+- [Documentation](#documentation) — DOC3-DOC20 · 17
 - [Release pipeline](#release-pipeline) — REL1-REL8 · 8
 - [Chart configuration surface](#chart-configuration-surface) — N1 · 1
 - [Security Phase 1 deferrals](#security-phase-1-deferrals) — H1–H14 · 4
@@ -41,7 +41,7 @@ None of it is a GitHub issue.
 - [Security Phase 3 deferrals](#security-phase-3-deferrals) — K4-K8 · 5
 - [Security scanner triage](#security-scanner-triage) — SCAN1 · 1
 - [Agent M1 deferrals (#328)](#agent-m1-deferrals-328) — A1–A8 · 7
-- [Agent M2 deferrals (#329)](#agent-m2-deferrals-329) — B2-B102 · 38
+- [Agent M2 deferrals (#329)](#agent-m2-deferrals-329) — B2-B103 · 39
 - [Passkey deferrals (#785)](#passkey-deferrals-785) — PK1-PK9 · 8
 - [MCP server deferrals (#246)](#mcp-server-deferrals-246)
 
@@ -52,18 +52,18 @@ None of it is a GitHub issue.
 The readers in `src/lib/sql/` decide where a statement starts, where it ends, and what it operates
 on. `src/lib/sql/grammar.ts` gave them a dialect (#292). These are the gaps that channel leaves.
 
-### S2. Backslash escaping is not a grammar fact
+### S2. No shipped dialect but Databend declares backslash escaping
 
-Whether `\` escapes inside a string literal differs by dialect, and in MySQL by session mode. Making
-it a row in `SqlGrammar` would narrow the false confirmation prompts #297 introduced, and would
-remove S4's MSSQL decline entirely.
+Whether `\` escapes inside a string literal differs by dialect, and in MySQL by session mode.
+The fact now exists: `SqlGrammar.backslashAlwaysEscapes`, and where it is true `spans.ts` reads a backslash and the character after it as one escaped pair inside `'…'` and `"…"`, except a backslash before a line feed, which leaves the literal unterminated (Databend's `\\.` does not match a line feed).
+Every shipped row but Databend's declares it `false`, so every other dialect keeps the undeterminable reading of a quote behind an odd backslash run.
+MySQL is not set `true` because `NO_BACKSLASH_ESCAPES` in `sql_mode` turns the escape off per session, so the row cannot state it for every connection.
+Setting it where a dialect always escapes would narrow the false confirmation prompts #297 introduced there.
+The fact says only that a backslash always escapes, so it cannot say that one never does (SQL Server, PostgreSQL's standard strings), and S4's MSSQL decline needs that second value before it can go.
 
-Left out of maintainer-sweep-5 on purpose: it retypes every literal in every dialect. It also
-destroys the premise of two fixtures that sweep required (the "end cannot be cut" case and the
-"genuinely unresolvable text still has to ask" case). Those fixtures need replacing with shapes that
-stay unresolvable once `\` is understood.
-
-The single largest follow-up from that sweep.
+Declaring it `true` on a row retypes that dialect's literals only, and no other dialect changes.
+It also destroys, for that dialect, the premise of two fixtures maintainer-sweep-5 required (the "end cannot be cut" case and the "genuinely unresolvable text still has to ask" case).
+Those fixtures need shapes that stay unresolvable once `\` is understood before another shipped row turns the fact on.
 
 ### S3. Comment and escape forms no reader models
 
@@ -1823,7 +1823,7 @@ Not fixed there: the change is to the adapter's log-dir read, whose error table 
 
 ### D126. Concurrent first acquisitions of one connection and profile each open a provider
 
-`acquireExecutionProfileProvider` (`src/lib/db/factory.ts:969-1075`) checks the profiled cache, and on a miss constructs and connects a provider, then stores it (`:1071`).
+`acquireExecutionProfileProvider` (`src/lib/db/factory.ts:1010-1121`) checks the profiled cache, and on a miss constructs and connects a provider, then stores it (`:1117`).
 Two callers that miss at the same time each construct one, and the later store overwrites the earlier entry, so the earlier provider stays connected with nothing left to close it.
 The editor and agent paths reach this function the same way.
 `/api/mcp` avoids it on its own side, with an in-flight map keyed on the exported `profiledCacheKey` (`src/lib/mcp/context.ts`).
@@ -2393,6 +2393,7 @@ Found 2026-10-04 while designing the Oxia provider (DECISIONS O10).
 
 Discovery runs on the first page of a walk with no pattern, within the bounds SB1-8.5 sets, and never under a folder, because under a folder its cost scales with the number of child nodes (O13; SPEC-RECONCILIATION cross-part ruling).
 A deeper or wider Pulsar tree is narrowed by prefix.
+`keyScan.levels`, the one-level listing the shared Keys panel gained for object stores, is the lazy children mechanism this entry asks for; Oxia does not declare it, so the entry stays open.
 
 Found 2026-10-04 while designing the Oxia provider (DECISIONS O13).
 
@@ -2419,6 +2420,7 @@ Found 2026-10-04 while designing the Oxia provider (DECISIONS O15).
 The shared Keys panel rows and the tab titles print a key as it is, so a key holding a control character is drawn with it.
 A key `a` followed by U+0000 shows as `a` and a box in its row and title, and its Source tab reads "Source: a", the same as a key `a`.
 Measured on Oxia, which reaches such a key from the Keys panel by design; the panel and the titles are shared, so every engine with such keys draws them the same way.
+The folder prefixes an engine that declares `keyScan.levels` answers are drawn by the same rows and are covered by the same fix.
 
 Found 2026-10-04 by the browser pass of the Oxia provider (step 4).
 
@@ -2640,6 +2642,171 @@ Because that call runs before the `ALLOW_CUSTOM_CONNECTIONS` check, a server wit
 Found in the review of #1572; both predate it.
 
 **Done when:** `resolveConnection` answers an inline connection whose `id` is present and not a string with 400 `CONFIG_ERROR` before the policy check, so the policy still answers 403 for every string or absent id, `withOneShotTunnel` refuses a missing `id` before the tunnel as the pooled paths do, and each has a failing route test first under `tests/api/db/`.
+
+### D246. The confirmation gate does not know Databend's destructive forms
+
+`isDangerousQuery` in `src/components/QuerySafetyDialog.tsx` asks first for a statement whose operative keyword is in `DANGEROUS_KEYWORDS` (`DELETE`, `DROP`, `TRUNCATE`, `ALTER`, `GRANT`, `REVOKE`, `UPDATE`), or whose code holds an `UPDATE` followed by `SET`, and that one set serves every SQL engine.
+Databend has destructive forms the set does not name: `INSERT OVERWRITE`, `REPLACE INTO`, `MERGE INTO`, `OPTIMIZE TABLE ... PURGE`, the `VACUUM` forms, `FLASHBACK TABLE`, `COPY INTO ... PURGE = true`, `REMOVE @stage`, `EXECUTE IMMEDIATE`, `CALL` and a `SETTINGS (...)` clause.
+Some write from a SELECT shape: `nextval` and the table functions `fuse_amend`, `set_cache_capacity`, `fuse_vacuum2`, `fuse_vacuum_temporary_table` and the two `fuse_vacuum_drop_*_index` (`table_function_factory.rs` in Databend's source).
+So Run sends each of them with no confirmation unless its text also holds an `UPDATE ... SET` pair; `docs/providers/databend.md` states the list under its known limitations.
+
+Found 2026-10-07 while designing the Databend provider (design 8, C20); the gate predates it.
+
+**Done when:** the gate prompts for each of these forms on a Databend connection, through a fact of the Databend grammar row or the destructive vocabulary rather than a type test in the gate, with a test per form in `tests/components/QuerySafetyDialog.test.tsx`, and the Databend doc's list shrinks to what the gate still misses.
+
+### D247. Driver-based SQL providers hold a whole result with no cell or byte budget
+
+An unlimited editor statement is cut at `MAX_UNLIMITED_ROWS` (100,000, `src/lib/db/utils/query-limiter.ts`), and that row count is the only bound most SQL providers put on a result: the providers built on a driver hand the driver's whole answer to Studio, however wide its rows or long its values.
+The Databend provider bounds each statement at 250,000 cells and 16 MiB of answer text, and measured the cost on the 384 MiB heap the container image sets (`NODE_OPTIONS` in `Dockerfile`): two of its largest results at once peaked at 149.7 MiB used (L9, `docs/providers/databend.md`).
+No other provider's worst shape was measured, so two concurrent wide results on such a provider may exhaust the heap.
+
+Found 2026-10-07 while designing the Databend provider (its memory bounds); pre-existing.
+
+**Done when:** the worst result shape of each driver-based SQL provider is measured on the 384 MiB heap, a cell or byte budget is added where two concurrent results pass it, and each budget is pinned by a test.
+
+### D248. The connection pulse and the fleet check resend a refused password every 60 seconds
+
+`useConnectionPulse` (`src/hooks/use-connection-pulse.ts`, `CONNECTION_PULSE_INTERVAL_MS`) posts the active connection to `/api/db/health` every 60 seconds, and the admin Overview (`refreshFleetHealth` in `src/components/admin/tabs/OverviewTab.tsx`) posts every connection to `/api/admin/fleet-health` on the same interval.
+Both reach `getOrCreateProvider` in `src/lib/db/factory.ts`, which caches a provider only after `connect()` succeeds, so a stored password the server refuses is sent again on every tick.
+On an engine whose password policy locks an account after a number of failed sign-ins, a wrong password left in a connection therefore locks that user for everyone, and keeps it locked.
+Databend is the one engine that does not, within one Studio process: its provider latches a refused sign-in for 15 minutes before any socket (`auth-latch.ts`, measured with `PASSWORD_MAX_RETRIES = 5` on the local fixture, L10), though each replica keeps a latch of its own (D252), and with a Warehouse set, or on a Databend Cloud host, the pulse sends nothing at all.
+
+Found 2026-10-07 while designing the Databend provider (review 11 #3); pre-existing.
+
+**Done when:** each shipped engine with an account lockout is measured against a wrong stored password under both timers, and either latches a refused sign-in the way Databend does or is left out of the timers, with a test per engine.
+
+### D249. No SQL provider bounds the statement text it is handed
+
+A route body is bounded only by the proxy's 10 MB buffer (`src/lib/api/bounded-json.ts`), and only non-SQL types declare a text bound: `maxTextBytes` in `NON_SQL_DESTRUCTIVE_VOCABULARY`, read by `consoleTextByteLimit` and `statementRefusal` in `src/lib/db/destructive-commands.ts` (InfluxQL, Milvus, Oxia, Qdrant).
+So every SQL provider hands its driver or its server whatever statement text the route accepted, up to that buffer, and the Databend provider's memory measurement had to assume two 9.9 MB statements at once (L9).
+
+Found 2026-10-07 by the external review of the Databend design (X04); pre-existing.
+
+**Done when:** every SQL provider declares a statement text bound the gate and the routes read before any request, with a test per provider that a text one byte over its bound is refused unsent.
+
+### D250. A second pasted connection string keeps the first one's password, user and database
+
+`handlePasteConnectionString` in `src/hooks/use-connection-form.ts` writes Password, User and Database only when the paste carries them (`if (parsed.password) setPassword(parsed.password)`, and the same for the user and the database), for every scheme.
+So a second paste into one open dialog that names another host and no password, or an empty one (`root:@`, BendSQL's own local form), keeps the first paste's password under a green "parsed successfully", and Test Connection sends it to the second host with the second paste's user.
+Measured 2026-10-08 with the real hook on `origin/main` (575eb8ccd) for `postgres://`, `mysql://` (a second paste of `root:@`), ClickHouse `https://` and `redis://`: each probe carried the first password to the second host.
+On the Databend provider's branch a `databend://` pair through the real dialog, route and provider put the first password in the Basic header the second host received.
+It is the sibling of #1125, which made a new connection open with every connection-scoped field at its default; a second paste into the same dialog was left out of that reset.
+The Databend Warehouse field does not follow this rule: a paste that names a host sets Warehouse, or clears it.
+
+Found 2026-10-08 by the red-team round of the Databend provider (HD-1); pre-existing.
+
+**Done when:** a paste that names a host writes every credential and addressing field it reads, clearing the ones the string does not carry, while the deliberate host keep for an `np:` or `lpc:` server stays, with a hook test per scheme that pastes two strings and asserts the probe carries nothing of the first, and `docs/providers/databend.md` section 4.1 drops its note.
+
+### D251. A pasted URL whose password holds an unencoded `/` or `?` is read with the password's tail as the database
+
+`parseGenericURL` in `src/lib/connection-string-parser.ts`, which reads `postgres://`, `mysql://`, `redis://`, `oracle://`, `mssql://`, `db2://`, `clickhouse://` and `http(s)://` and their aliases, hands the text to `new URL`, which ends a URL's address part at the first `/` or `?`.
+So an unencoded `/` in the password moves the split: `postgres://app:2024/Secret-Tail@db.example.com:5432/prod` reads as host `app`, port `2024` and database `Secret-Tail@db.example.com:5432/prod`, and the dialog reports a green "parsed successfully" with that text in Database and in the auto-filled Name; with `?` the tail is dropped.
+Measured 2026-10-08 on `origin/main` (575eb8ccd) for `postgres://` and `mysql://`.
+The Databend DSN parser refuses every string with an `@` after its first `/` or `?` before `new URL`, since a password can also hold an unencoded `@` before its `/`, with a sentence that names each percent-encoding (`DATABEND_DSN_REFUSALS.userinfo`), as it refuses `#`.
+
+Found 2026-10-08 by the red-team round of the Databend provider (HD-2); pre-existing.
+
+**Done when:** every scheme `parseGenericURL` reads refuses a string with an `@` after its first `/` or `?`, with a sentence naming each percent-encoding, and parser tests per scheme plus a hook test show that such a paste fills nothing.
+
+### D252. The Databend sign-in latch is kept per process, so each replica sends a refused password once
+
+The sign-in latch (`src/lib/db/providers/sql/databend/auth-latch.ts`) is a map in one Node process, so each Studio replica sends a sign-in Databend refused once per 15 minutes before its own latch holds.
+The chart runs Studio as several replicas through `replicaCount`, or `autoscaling` up to 10 (`charts/libredb-studio/values.yaml`), and the pulse, the fleet check and the tree reads are balanced across them.
+So five or more replicas can send five refused sign-ins inside one 15-minute window and lock the user under a password policy (`PASSWORD_MAX_RETRIES = 5`, L10 in `docs/providers/databend.md`), which the latch exists to prevent.
+
+Found 2026-10-08 by the red-team round of the Databend provider (HD-5); the latch is new with the provider.
+
+**Done when:** a sign-in Databend refused is latched for every replica of one deployment, before any socket, with a test that two latch instances over one shared record send a refused password once between them, and `docs/providers/databend.md` sections 3.7 and 13 drop the per-process scope.
+
+### D253. The shared HTTP transport reports a request stopped while it waits for a socket as one stopped in flight
+
+`createNodeTransport` in `src/lib/db/http/node-transport.ts` holds the requests past `maxSockets` itself and starts one only when a socket is free.
+A request whose signal fires while it waits there fails as `TransportError` kind `aborted`, "The request was cancelled", the same kind and words as a request stopped after it was sent (`onAbort` calls `abortFailure` in both), so a caller cannot tell a request that never left from one that may have reached the server.
+Measured 2026-10-08 on Bun 1.4.2 and Node 24.14 with `maxSockets: 1` against a local `node:http` server: of two POSTs, the second, cancelled while the first held the socket, failed as `aborted` and the server received only the first; the first, cancelled after the server received it, failed the same way.
+The Databend transport is the one caller that reads an `aborted` POST as possibly run: it sends the kill and a logout, and reports that the statement may have run (`postFailed` and `closeUnanswered` in `src/lib/db/providers/sql/databend/http-transport.ts`).
+Through the Databend provider a POST does not wait for a socket today, since its limiter admits two statements per process, each sends one request at a time, and a connection has three sockets; Qdrant and InfluxDB read `aborted` as a cancel either way.
+
+Found 2026-10-08 while fixing the red-team findings on the Databend provider's transport; pre-existing in the shared transport.
+
+**Done when:** a request stopped before it was handed a socket fails in a way its caller can tell from one stopped after it was sent, by a kind or a flag of its own, as `truncated` marks a cut answer, with a node-transport test that runs two requests under `maxSockets: 1`, stops the queued one, and asserts its failure and that the server received one request, and the Databend transport reads that failure as a stop with nothing sent, with no kill, no logout and `cancelled` or `timeout`, tested.
+
+### D254. Metadata services outside link-local networks are not refused
+
+The byte transport refuses the entries of `LINK_LOCAL_NETWORKS` in `src/lib/db/http/egress-policy.ts` (`169.254.0.0/16` with its IPv4-mapped form and its NAT64 form under the well-known prefix `64:ff9b::/96`, `fe80::/10`, `fd00:ec2::254`) whatever `DB_HTTP_BLOCK_PRIVATE_HOSTS` says (`docs/SECURITY.md` row 0.6).
+A metadata service a cloud serves at any other address is reachable with the guard off, and no primary source for such addresses was read when the list was written.
+The first candidate to verify is Alibaba Cloud's `100.100.100.200`, reported by a reviewer and not yet sourced; it sits in CGNAT `100.64.0.0/10`, which the byte transport refuses only when `DB_HTTP_BLOCK_PRIVATE_HOSTS` is on.
+The second is `169.254.0.0/16` behind the NAT64 local-use prefix `64:ff9b:1::/48`, which the guard's own list holds and `LINK_LOCAL_NETWORKS` does not, so with the guard off the byte transport reaches it.
+The third is the IPv4-compatible form `::169.254.169.254`, which `LINK_LOCAL_NETWORKS` does not match on Bun 1.4.2, Node 24.14 or Node 26.10 (measured 2026-10-10 with the same `BlockList`); the kernel it was probed on does not route `::a.b.c.d` to IPv4, and no primary source says whether any platform does.
+
+Found 2026-10-09 while designing the S3 provider.
+
+**Done when:** each named cloud's documented address is read from a saved primary source and added to `LINK_LOCAL_NETWORKS` or recorded as reachable.
+
+### D255. The shared text transport reads a request's cap again after checking it
+
+`createNodeTransport` in `src/lib/db/http/node-transport.ts` checks `request.maxResponseBytes` in `request()` and then reads it from the caller's object again for every body chunk, so a field that answers differently on a later read sets a cap that was never checked.
+Measured 2026-10-10 on Bun 1.4.2 against a raw local listener: a `maxResponseBytes` getter that answered 100 on its first read and 2 MiB afterwards was read five times, and a 1 MiB body was returned whole instead of failing as `too-large`.
+The same path never checks `method` at all, so a caller that passes `"DELETE"` past the type sends `DELETE` (measured on the same run).
+It also refuses a closed transport and a cancelled signal before it reads the caller's headers, so a header getter that cancels the signal or closes the transport is sent anyway: measured 2026-10-10 on Bun 1.4.2 against a local `node:http` server, both requests resolved and the server received both.
+`createNodeByteTransport` reads each field once, checks the method, and admits a request again once every field has been read; no provider passes such an object today, so this is hardening.
+
+Found 2026-10-10 by the whole-branch review of the S3 byte transport; pre-existing in the text transport.
+
+**Done when:** the text transport reads `method`, `url`, `body`, `form`, `headers`, `signal` and `maxResponseBytes` once, refuses a method other than GET and POST before any socket, refuses a closed transport and a cancelled signal after those reads, and sends only what it checked, with a test per field whose getter answers differently on its second read and a test whose header getter cancels the signal and one whose getter closes the transport, each asserting that nothing is sent.
+
+### D256. A form the text transport cannot serialise leaks its socket slot
+
+`createNodeTransport` in `src/lib/db/http/node-transport.ts` serialises a request's `form` with `payloadOf` after the request has taken its socket slot and outside the try that frees it, so a `form` that `URLSearchParams` cannot read rejects with the raw TypeError and the slot is never freed.
+Measured 2026-10-10 on Bun 1.4.2 with `maxSockets: 1` against a local `node:http` server: a POST whose form held a Symbol value rejected with "TypeError: Cannot convert a Symbol value to a string", and the next GET on the same transport waited until its 1.5 s deadline and failed as a timeout; origin/main behaves the same.
+Queued behind another request it is worse: the TypeError is thrown when the earlier request's answer frees the slot, so it escapes from that request's `end` listener as an uncaught exception, which ends a Node process with no handler, the earlier request never resolves, the queued one never settles, and the next request times out; measured the same day on Bun 1.4.2 and Node 24.14.0, on origin/main as well.
+No provider passes a form value that is not a string today, so this is hardening.
+
+Found 2026-10-10 by the adversarial review of the S3 byte transport; pre-existing in the text transport.
+
+**Done when:** a form that cannot be serialised is refused before any socket slot is taken, with a `DatabaseConfigError` that names no value, and a node-transport test under `maxSockets: 1` asserts that refusal and that the next request completes.
+
+### D257. With the egress guard on, the text transport dials a zoned link-local DNS answer on Bun
+
+With `DB_HTTP_BLOCK_PRIVATE_HOSTS` on, the text transport's lookup is the guard's `publicAddressLookup`, whose check `assertPublicDnsAnswers` in `src/lib/db/http/egress-policy.ts` has no zone rule, and Bun's `BlockList` does not match a zoned address such as `fe80::1%lo` against `fe80::/10`, where Node's does.
+Measured 2026-10-10 on Bun 1.4.2 with `node:dns` mocked to answer `fe80::1%lo`: the text transport dialled it and failed with ECONNREFUSED instead of the guard's refusal.
+The byte transport runs the link-local check, which refuses any zoned IPv6 answer, after the guard's (`guardedLinkLocalRefusingLookup`), so it refuses the same answer.
+
+Found 2026-10-10 by the adversarial review of the S3 byte transport; pre-existing in the guard.
+
+**Done when:** the guard's answer check refuses an IPv6 answer with a zone index on every runtime, with an egress-policy test that mocks `node:dns` to answer `fe80::1%lo` and asserts the guard's sentence and that no socket is opened.
+
+### D258. The text transport sends a queued request whose signal fired with the request ahead of it
+
+When one signal cancels a running request and the requests queued behind it, `EventTarget` calls their abort listeners in order, so the running request's failure frees its socket slot and the shared queue in `src/lib/db/http/node-transport.ts` starts the next request before that request's own listener has run.
+`createNodeTransport` then hands it to the Agent, which dials a socket for it, and only then is it destroyed, so a cancel still costs a connection and its lookup.
+Measured 2026-10-10 on Bun 1.4.2 and Node 24.14 with `maxSockets: 1`: four GETs on one AbortController against a raw listener that never answers all failed as `aborted`, and the listener accepted a second, empty connection after the abort.
+`createNodeByteTransport` fails such a request as cancelled before it is signed or handed to the Agent.
+
+Found 2026-10-10 by the adversarial review of the S3 byte transport; pre-existing in the text transport.
+
+**Done when:** the text transport fails a request taken from the queue with its signal already aborted before it is handed to the Agent, with the same kind and message as today, and a node-transport test with four requests on one signal under `maxSockets: 1` asserts that the listener accepts one connection.
+
+### D259. A 101 answer never settles a text transport request
+
+node:http hands a `101 Switching Protocols` answer to the request's `upgrade` event, never to the response callback, and `createNodeTransport` in `src/lib/db/http/node-transport.ts` has no `upgrade` listener, so the request holds its socket slot until its deadline and is reported as a timeout, or forever without one.
+Measured 2026-10-10 on Bun 1.4.2 and Node 24.14 against a raw listener that answers every request with a 101: a GET with a 1.5 s deadline failed as `timeout` after 1501 ms.
+`createNodeByteTransport` refuses a 101 at once as a network failure and destroys the switched socket.
+
+Found 2026-10-10 by the adversarial review of the S3 byte transport; pre-existing in the text transport.
+
+**Done when:** the text transport fails a 101 answer at once as a `network` failure and destroys its socket, with a node-transport test that asserts the failure arrives well before the deadline and that the next request under `maxSockets: 1` completes.
+
+### D260. A request that fails in flight frees its slot while the Agent still counts its socket
+
+When a request fails after its socket was opened, by a cancel, a deadline or the byte cap, the shared queue in `src/lib/db/http/node-transport.ts` frees its slot at once, but the Agent counts the destroyed socket against `maxSockets` until it has closed, so the next queued request goes to the Agent's own queue, where Node dials a socket even for a request cancelled there.
+Measured 2026-10-10 on Node 24.14 with the byte transport and `maxSockets: 1`: in ten rounds of a GET that failed as `too-large` followed by a queued GET cancelled as the first failed, the listener accepted ten empty connections besides the ten requests; Bun 1.4.2 accepted one.
+The text transport shares the queue, so it behaves the same.
+On the byte transport that next request is signed and handed to the Agent while the Agent still counts the failed request's socket, so it is signed before it reaches a socket; a SigV4 signature stays valid for 15 minutes, so the wait costs no signature.
+A byte answer cut by `truncateAt` already frees its slot only once its request has closed (`resolveCut`).
+
+Found 2026-10-10 while fixing the adversarial review of the S3 byte transport; pre-existing in the shared queue.
+
+**Done when:** every failure that destroys a request's socket frees the slot only once that request has closed, as `resolveCut` does, with every text outcome unchanged, and the runtimes test counts no empty connection after a failed request followed by a queued one cancelled as it fails.
 
 ## Value interpolation
 
@@ -3090,16 +3257,19 @@ Found by the acceptance pass of the vector-family work; the menu entries predate
 
 **Done when:** PostgreSQL and SQLite declare `kinds` on the operations their row menus offer, naming the kinds each engine runs them on, measured on a PostgreSQL materialized view and on SQLite's `ANALYZE` of a view, and a test asserts that a view's row menu offers no maintenance entry its engine would not run.
 
-### X26. The /monitoring Tables and Sessions tabs offer maintenance and Terminate to a non-admin, and the server refuses them
+### X27. A query that reaches its deadline is answered HTTP 408, which Chromium resends, so the statement runs up to three times
 
-`MonitoringDashboard` (`src/components/monitoring/MonitoringDashboard.tsx:304-310`) renders `SessionsTab` and `TablesTab` without `isAdmin`, and both default it to `true`, so a signed-in user who is not an admin sees every per-row Analyze, Vacuum and Reindex control and every Terminate button on /monitoring.
-Each click is sent, and `POST /api/db/maintenance` answers `403 {"error":"Unauthorized. Admin access required."}`, shown as a toast, while the object tree's row menus already hide these entries from the same user.
-Measured 2026-10-03 in the acceptance pass of the vector-family work, signed in with the user role on a PostgreSQL connection: 6 maintenance buttons and 7 Terminate buttons, each click answered 403.
-`TablesTab`'s docblock already names that default as older behaviour and leaves it alone.
+`createErrorResponse` in `src/lib/api/errors.ts` answers a `TimeoutError` with HTTP 408 and `retryable: true`.
+Chromium reads a 408 on a reused keep-alive connection as a server closing an idle socket and sends the POST again, up to twice, without telling the page.
+So one Run of a statement that reaches its query timeout reaches the database up to three times, and the editor shows "Query timed out" only after the last.
+Measured 2026-10-08 on the CI image of #1593 with a Databend connection whose query timeout was 3 seconds: the page sent one `POST /api/db/query`, Databend received the statement three times about 3 seconds apart, each with its own kill, and the server logged three "Query timeout" lines; a first Databend Cloud connect that met a resuming warehouse was answered 408 twice before its third attempt passed.
+Since #1593, Databend's resuming-warehouse case, Studio's own read that outlasts its deadline on a named warehouse, is answered with HTTP 503, which Chromium does not resend.
+Not measured with a write: a statement that a provider does not stop on the server, or one that commits before the deadline is noticed, would take effect once per attempt.
+The route has answered 408 since f59b44d5c (2026-03-12), for every engine.
 
-Found by the acceptance pass of the vector-family work; the default predates it.
+Found 2026-10-08 by the browser pass of the Databend provider (#1593); pre-existing.
 
-**Done when:** `MonitoringDashboard` passes the signed-in role to both tabs, a non-admin sees no maintenance or Terminate control on /monitoring, and a component test renders the dashboard as a non-admin and finds none.
+**Done when:** a statement deadline is answered with a status no browser resends (for example 504), `docs/API_DOCS.md` names it, and an e2e test that lets one statement reach its deadline shows the database received it once.
 
 ---
 
@@ -3131,31 +3301,19 @@ So whatever shape holds an index has to be absent on those engines rather than e
 column row by something other than their text, with no extra round trip, and an engine that answers
 neither draws no empty affordance for them.
 
-### U25. The object tree has no filter, over object names or column names
+### U25. The object tree filter does not match column names
 
-`docs/FEATURES.md` promises "Real-time, high-performance filtering across both table names and column
-names".
-That sentence is true of `SchemaExplorer`, which filters on `table.name` and on `col.name` and is
-what the mobile schema tab renders; it is false of the desktop sidebar, which has no filter box at
-all.
-This PR scoped the sentence to the schema tab rather than deleting it, which makes the desktop gap
-explicit instead of covered.
+The desktop sidebar's tree has a filter over object names (`src/components/object-tree/filter.ts`).
+It matches object rows only, over every folder already read, and reports the folders it has not read instead of reading them on a keystroke.
+Column names are still matched only by `SchemaExplorer`, which is what the mobile schema tab renders.
 
-Repro: open the desktop sidebar on a schema with 200 tables and look for a filter.
-Open the same connection at a mobile width, switch to the schema tab, and there is one.
+Repro: open the desktop sidebar, open a table's folder, and type the name of one of its columns into the filter box.
+No row matches.
 
-The tree's filter is not the flat list's, and that is the work.
-The flat list holds every table and every column in memory, so its filter is an array filter over
-data that is already there.
-The tree reads lazily: a filter over column names can only match a row whose `describe` has happened,
-and a filter over object names can only match a folder whose objects have been listed.
-What an unread subtree does under a filter has to be decided before anything is written, and the
-three answers are hide it, show it unfiltered, or read it, where the third is the eager
-whole-database read #789 removed.
+A column filter over the lazy tree can only see objects whose `describe` has run, which on a large schema is a handful.
+What an undescribed object does under a column filter has to be decided first, and reading every describe on a keystroke is the eager read #789 removed, one request per table.
 
-**Done when:** the tree has a filter over object and column names, its behaviour on an unread subtree
-is stated in the component's docblock and asserted by a test, and no keystroke in the box can trigger
-a whole-database read.
+**Done when:** the tree filter matches column names, its behaviour on an undescribed object is stated in `filter.ts` and asserted by a test, and no keystroke issues a describe.
 
 ### U26. The tree row menu is two items shorter than the flat explorer's
 
@@ -3533,7 +3691,7 @@ Not fixed in #1085: the wide matrix was chosen so that the chart needed no chang
 ### U45. The connection status badges read a refused connection as slow, timed out or online
 
 Three surfaces report whether a connection works, and none of them says it was refused.
-- `checkHealth` in `src/hooks/use-connection-manager.ts` sets the pulse to `"degraded"` for any answer of `POST /api/db/health` that is not OK, and `src/components/studio/StudioDesktopHeader.tsx` renders `"degraded"` as "Slow", so a server that refused the credentials reads "Slow" in the desktop header.
+- `checkHealth` in `src/hooks/use-connection-pulse.ts` sets the pulse to `"degraded"` for any answer of `POST /api/db/health` that is not OK, and `src/components/studio/StudioDesktopHeader.tsx` renders `"degraded"` as "Slow", so a server that refused the credentials reads "Slow" in the desktop header.
 - The fleet list of `src/components/admin/tabs/OverviewTab.tsx` renders every item whose `status` is `"error"` as "timeout", beside the message that says what the error was.
 - `src/components/studio/StudioMobileHeader.tsx` renders the label "Online" for every active connection without reading the health check, and the pulse dot beside it draws `"degraded"` in the warning tint under the title "Connection: degraded".
 Seen 2026-09-23 in the #1085 browser pass on a Prometheus connection with a wrong password: `/api/v1/status/buildinfo` answered HTTP 401, and the desktop header read "Slow", the admin fleet "timeout" and the mobile header "Online", while the object panel showed the refusal itself.
@@ -3683,12 +3841,13 @@ Found 2026-09-30 while designing the etcd provider (#1089, spec E10).
 
 `vacuumStateKnown` ignores `vacuumSupported` (`src/components/monitoring/tabs/TablesTab.tsx`, where the card reads it), so on an engine that supports maintenance and declares no `vacuum` the card counts the tables whose `bloatRatio` passes 10 as if the engine had a vacuum.
 The table's "Vacuum" column header (`TablesTab.tsx:443`) is drawn on those engines too.
-Ten engines declare `supportsMaintenance: true`, set or inherited from `BaseDatabaseProvider.getCapabilities()`, with no `vacuum` among their `maintenanceOperations`: MySQL, libSQL, Oracle, SQL Server, ClickHouse, Trino, Redis, Couchbase and etcd today, and Db2 LUW after the Db2 PR (#786), which reads no table statistics in its first version.
+Twelve engines declare `supportsMaintenance: true`, set or inherited from `BaseDatabaseProvider.getCapabilities()`, with no `vacuum` among their `maintenanceOperations`: MySQL, libSQL, Oracle, Db2, SQL Server, ClickHouse, Trino, Redis, Couchbase, etcd, Milvus and Databend.
 All but MySQL publish no `bloatRatio`, so their card shows 0 with a green "OK" wherever the tab has table statistics to read; Redis answers none, so its card reads that only while its database is empty, and N/A once the database holds a key.
 MySQL's `bloatRatio` is `DATA_FREE` as a percentage of the table's data and index bytes, so its card counts the tables past 10 percent under the Vacuum title, a count the fix takes off the card too.
+On Databend, whose one operation is `kill`, the Tables tab of self-hosted Databend and of Databend Cloud read "Vacuum 0 OK" with a green icon on 2026-10-08, beside rows whose Bloat and Vacuum columns all read "-".
 Reproduce: render `TablesTab` with the capabilities `POST /api/db/provider-meta` serves for libSQL, Oracle or SQL Server and the statistics of one table, or open the Tables tab on one of them over a database that holds a table, and read the Vacuum card.
 
-Found 2026-09-30 while designing the etcd provider (R11 ARCH-3); its engine list was measured again on 2026-10-01 by the etcd review, from each provider's capabilities and table statistics.
+Found 2026-09-30 while designing the etcd provider (R11 ARCH-3); its engine list was measured again on 2026-10-01 by the etcd review, from each provider's capabilities and table statistics, and on 2026-10-08 from each type-id's `getCapabilities()`, the day the browser verification of the Databend provider (#1593) saw the Databend card.
 
 **Done when:** `vacuumStateKnown` requires `vacuumSupported`, the card is absent or says the engine has no vacuum, and a component test pins it for an engine without one.
 
@@ -3952,16 +4111,19 @@ Not fixed there: the panel is shared by every key-value engine.
 
 **Done when:** "Scan all" is disabled once the walk is exhausted, as "Scan more" is, and a component test asserts both buttons after a scan that answered complete.
 
-### U85. The agent rail says a conversation "ended when the page reloaded" after in-app navigation
+### U85. The agent rail says a conversation "ended when the page reloaded" after in-app navigation or a refused start
 
 Going from Studio to Monitoring and back with the browser's Back button, without a reload, the rail says "The conversation this browser was in (1 question, ...) ended when the page reloaded. Your next question starts a new one."
 `interrupted` in `src/components/agent/use-agent-run.ts` is the stored thread whenever the mounted rail follows no run, and the rail's `runId` starts empty each time the rail mounts, so a remount after in-app navigation reads as a reload (`agent-thread-ended` in `src/components/agent/AgentRail.tsx`).
 Seen 2026-10-04 in the final browser pass of the Oxia provider (#1310); nothing in it is specific to Oxia.
+A start the server refuses is a second trigger, with no navigation at all: `start()` in the same hook empties `runId` and the run's entries before it posts, so a refused start leaves the rail following nothing while the previous run's conversation is still stored.
+After a Plan question was answered, an Agent-mode Start that the server refused with 400 `{"refused":"engine-unsupported"}` left the same sentence on the rail, and "Run details No activity yet." in place of the plan answer.
+Measured 2026-10-08 in the browser on Databend Cloud and self-hosted Databend, where a fresh page never showed the sentence, and the same day at the hook in a throwaway test: after a refused start, `interrupted` named the answered run's conversation and the run's entries were empty.
 
-Found by the final browser pass of the Oxia provider (#1310).
+Found by the final browser pass of the Oxia provider (#1310), and the second trigger on 2026-10-08 by the browser verification of the Databend provider (#1593); pre-existing.
 Not fixed there: the rail is shared by every engine, and the PR does not touch it.
 
-**Done when:** in-app navigation away from Studio and back either keeps following the conversation or says what actually ended it, the reload wording appears only after a reload, and a test remounts the rail without a reload and asserts the notice.
+**Done when:** in-app navigation away from Studio and back either keeps following the conversation or says what actually ended it, a refused start leaves the previous run and its answer on screen, the reload wording appears only after a reload, and tests remount the rail without a reload and refuse a start after an answered run, each asserting the notice.
 
 ### U86. A MongoDB view's row menu offers Validate, Compact and Check Collection
 
@@ -4079,6 +4241,143 @@ The other sets ran, and the grid gives no sign that they exist; a MySQL `CALL` t
 Found 2026-10-07 by the external review of the result column names fix; pre-existing.
 
 **Done when:** a statement or a transaction batch that returns several sets is shown by the same rule as a script batch (or lets the user choose the set), the result says how many sets came back, and route tests pin `EXEC`, `CALL` and the transaction path.
+
+### U97. A managed refresh keeps the active connection's stale copy
+
+`applyManagedRefresh` in `src/hooks/use-connection-manager.ts` keeps the active connection's object, and its list entry, when a managed refresh brings a new version of it, so the connection-change effect does not reset an open transaction, discard edits or read the schema again.
+Picking the connection again hands back the same stale object.
+Queries are not affected, because the payload sends the seed id and the server resolves the current descriptor, but the client-side metadata read key and the pulse key (`useConnectionPulse`) never see the change.
+So a seed edited while it is open to add a Databend Warehouse keeps its pulse, which then resumes billed compute every 60 seconds until the page is reloaded.
+Proven with a throwaway test on PR B of the Databend provider: after a refresh that changes a seed's host and database, the active object and its list entry are the old ones.
+
+Found 2026-10-08 by the red-team round of the Databend precursors (I14); pre-existing, and the Databend provider makes it reachable.
+
+**Done when:** a managed refresh that changes a field the connection resolves through (host, port, database, warehouse, credentials) replaces the active copy and a cosmetic change (name, colour) keeps it, with a hook test for each, or `docs/SEED_CONNECTIONS.md` states that an edit to an open seed takes effect after a reload.
+
+### U98. The Sessions panel words every kill as ending the session, and drops the provider's own message
+
+`SessionsTab` (`src/components/monitoring/tabs/SessionsTab.tsx`) asks "Terminate Session?" before every kill and says the action "will forcefully end the connection and may cause data loss if the session has uncommitted transactions", and `killSession` in `src/hooks/use-monitoring-data.ts` then toasts "Session <id> terminated successfully", dropping the `message` of the `MaintenanceResult` that `POST /api/db/maintenance` returns.
+Neither reads what the provider declares: the kill's `maintenanceOperationSpecs.kill.label` names the operation (Databend's is "Kill Query"), and the result's message says what the engine did.
+On Databend `KILL QUERY` stops the session's current statement and leaves the session open, so the dialog and the toast both claim more than happened, while the provider's own message, "Asked Databend to stop the current statement of session <id>.", reaches only an API caller.
+Measured 2026-10-08 with the maintenance route mocked to return the Databend provider's own result: the toast read "Session <id> terminated successfully".
+Seen live the same day by the browser verification of the Databend provider (#1593): on self-hosted Databend the dialog read as quoted above, and the toast read "Session <id> terminated successfully" while the route answered 200 with the provider's message; on Databend Cloud the dialog read the same.
+
+Found 2026-10-08 by the red-team round of the Databend provider (HD-4); pre-existing for every provider that declares `kill`.
+
+**Done when:** the dialog's title, button and wording come from the provider's kill declaration, and the toast shows the route's `message` when it returns one, with a component test for a provider whose kill stops a statement and one whose kill ends a session, and `docs/providers/databend.md` section 8 drops its note.
+
+### U99. A result with no rows heads Studio's own notices "The engine reported:"
+
+A result with no rows shows its `warnings` under "The engine reported:" (`ENGINE_WARNINGS_LABEL` in `src/components/ResultsGrid.tsx`, since #289), and `QueryWarning` in `src/lib/types.ts` still describes the channel as notices an engine attached, "as the engine worded it".
+Providers have since put sentences of their own in the same channel (etcd, Kafka, Milvus, Qdrant, Prometheus, and now Databend), so the heading credits the engine with any of them that arrives on a result with no rows; over a result with rows the stats bar counts them as "N warnings" and credits no one.
+Measured 2026-10-08 in the browser on self-hosted Databend and Databend Cloud: after `BEGIN` the panel read "The engine reported:" over "The statement left a transaction open, and each statement runs in its own session, so Studio rolled it back.", and after `USE studio_demo` over the sentence saying that USE does not carry over.
+The same day a throwaway test drew Studio's sentence for an etcd `watch` that saw no event, "Watched /apisix/routes/ (prefix) for 5 s: no event.", under the same heading, the result shaped by `commandResult` in `src/lib/db/providers/keyvalue/etcd/results.ts` and drawn by `ResultsGrid`.
+
+Found 2026-10-08 by the browser verification of the Databend provider (#1593); pre-existing.
+
+**Done when:** a warning carries whose words it is (for example a `source` on `QueryWarning` that a provider sets on the sentences it writes), the empty results panel heads the engine's notices and Studio's own apart, or under one heading true of both, the `QueryWarning` docblock says what the channel carries, and a component test draws a Studio-written warning on a result with no rows.
+
+### U100. An error quotes the `LIMIT 501` that Studio appended to the statement
+
+A SELECT with no bound of its own is sent with ` LIMIT <n>` appended (`applyQueryLimit` in `src/lib/db/utils/query-limiter.ts`, through `SQLBaseProvider.prepareQuery`), one row past the page (`probePastPage` in `src/lib/api/page-probe.ts`), so `LIMIT 501` under the editor's page of 500.
+An engine whose error quotes the statement, or names the token it stopped at, hands that clause back, and the results panel, the toast and the History entry show the message as the route returns it, with nothing saying that Studio added the clause.
+Measured 2026-10-08 in the browser on Databend Cloud and self-hosted Databend: a SELECT from an unknown table failed with Databend's quote of the statement ending in ` LIMIT 501`, its caret still under the right column.
+The same day, through the providers in process, in the order `POST /api/db/query` runs them (`prepareQuery`, `probePastPage`, then `query`): DuckDB answered `SELECT id FROM missing_table` with `LINE 1: SELECT id FROM missing_table LIMIT 501`, and the unfinished `SELECT 1 AS one WHERE` with `Parser Error: syntax error at or near "LIMIT"`; SQLite answered that unfinished statement with `near "LIMIT": syntax error`, a token the user never typed.
+
+Found 2026-10-08 by the browser verification of the Databend provider (#1593); pre-existing.
+
+**Done when:** an error from a statement the limiter rewrote tells the user that Studio appended the bound and which clause it was, carried by the response rather than by a type-id branch, and a test drives an unfinished SELECT on SQLite to that error.
+
+### U101. Agent mode asks consent for an Analyze run that the server then refuses on the engine
+
+On an engine outside `AGENT_EXECUTION_ENGINES` (`src/lib/agent/engine-support.ts`), the rail's amber notice says that a run whose workflow sends a statement is refused at start, yet a start that resolves to Analyze (`data-analysis`) first raises the consent step.
+The step is headed "Start this run" with a "read-only" pill, says "This run will open as Analyze on <connection>, which answers with a result.", and its checkbox note promises "the same database-enforced read-only session either way".
+Its "Start run" then sends `POST /api/agent/runs`, which answers 400 `{"refused":"engine-unsupported"}`, and the rail says "No run was opened. The notice above says why, and what still runs on this engine."
+`hold` in `src/components/agent/AgentRail.tsx` raises the step whenever `canHandOver` holds, and `canHandOver` reads the mode, `AGENT_WORKFLOW_PRESENTS_ANSWER` and the hand-over runner but never the engine, while the route refuses on `AGENT_WORKFLOW_SENDS_STATEMENTS` and the engine (`src/app/api/agent/runs/route.ts`).
+The workflow is the trigger: Analyze chosen under Advanced reproduces it every time, and an Automatic start only when the classifier reads the objective as data analysis, which varied between runs of one objective.
+Measured 2026-10-08 in the browser on Databend Cloud and self-hosted Databend, and the same day on MongoDB in a throwaway component test of the rail: the step appeared, and "Start run" got the 400 and that line.
+
+Found 2026-10-08 by the browser verification of the Databend provider (#1593); pre-existing.
+
+**Done when:** a start whose workflow sends a statement, on an engine agent mode does not execute on, is not held at a consent step (the rail refuses it before any card, or the card says that no run opens on this engine), the rail and the route decide it with one shared predicate, Start stays live for the operations workflow, and a component test drives an Analyze start on such an engine and finds no step promising a read-only run.
+
+### U102. Opening a connection reads its whole inventory twice
+
+On sign-in, on a reload and when a connection is opened, Studio posts `/api/db/objects/inventory` twice with the same body for the same connection, so the read of every table's columns that U27 describes runs twice, and `/api/db/provider-meta` is posted three times.
+Measured 2026-10-08 on the CI image `sha-d8cd782` of #1593, signed in as the standard user with one seed connection: a PostgreSQL 16 seed and a self-hosted Databend seed each got two inventory requests with the body `{"kinds":[...],"includeColumns":true}` on sign-in and two again after a reload, and the Databend Cloud seed of the same day's browser verification got two when Studio opened it at sign-in.
+On a connection whose requests resume billed compute, such as a Databend Cloud warehouse, the second request is a second billed read of the whole catalog.
+Databend's two `/api/db/objects/containers` requests in the same window are not a repeat: one lists the catalogs and the other the default catalog's databases.
+The connection-change effect in `src/components/Studio.tsx` depends on `[conn.activeConnection, metadata]` and calls `conn.fetchSchema` on every run, and the metadata arrives after the connection is made active, which fits two reads; which change sends the second was not isolated.
+
+Found 2026-10-08 by the browser verification of the Databend provider (#1593); pre-existing for every engine.
+
+**Done when:** opening a connection sends one inventory request, with a test that makes a connection active, lets its metadata arrive and counts one `/api/db/objects/inventory` request, and the editor's tab type still follows the metadata.
+
+### U103. An Explain declined while a statement runs turns Cancel back into Run
+
+`executeQuery` in `src/hooks/use-query-execution.ts` marks the tab as executing before it decides whether an Explain may be sent, and the decline path then sets `isExecuting: false` and `isLoadingMore: false` on the tab, whatever else runs there.
+So an Explain declined while a statement runs on the same tab shows Run again, and that statement can no longer be cancelled from the editor; its rows still land when it ends.
+Measured 2026-10-08 on the CI image `sha-f280feb` of #1593 against self-hosted Databend: while `SELECT count(*) FROM numbers(3000000000) WHERE number % 7 = 3` ran, Explain on a statement with an optimizer hint was declined, and the toolbar showed Run until the statement ended about 2 seconds later.
+The decline path on `main` resets both flags the same way, for every engine.
+
+Found 2026-10-08 by the browser re-verification of the Databend provider (#1593); pre-existing.
+
+**Done when:** a declined Explain leaves a run in flight on its tab as it was, Cancel included, with a hook test that starts a run, has an Explain declined on the same tab before the run answers, and finds the tab executing until the run's answer.
+
+### U104. The Keys panel cannot be shown beside the object tree
+
+The Sidebar shows the Objects view or the Keys view, never both (`src/components/sidebar/Sidebar.tsx`), so a bucket selected in the tree with the Keys panel scoped to it beside the tree is reached in two steps: Browse Keys on the bucket row switches to the Keys view on `<bucket>/`, with that folder open and its top level listed.
+Showing both views at once would change the sidebar for Redis, etcd and Oxia, which the folder-aware Keys panel leaves unchanged.
+
+Found 2026-10-09 while designing the folder-aware Keys panel for object stores.
+
+**Done when:** a side-by-side layout is designed that leaves Redis, etcd and Oxia unchanged, or the owner declines it.
+
+### U105. The key scan route passes on a cursor its own next request refuses
+
+`POST /api/db/keys/scan` holds the cursor a caller sends to the walk's declared shape (`readCursor` in `src/app/api/db/keys/scan/route.ts`), but returns the cursor a provider answers without looking at it.
+So a provider that declares a `decimal` cursor and answers a page with another one gets that page through with `200`, and the reader's next page is refused with `400` `"cursor" must be a decimal cursor the previous page answered with`, a sentence that blames the reader for the provider's defect.
+Measured 2026-10-10 with test doubles on the folder-aware Keys panel branch: a decimal level walk answering cursor `"a"` and a plain decimal key walk answering cursor `"k"` both gave `200` on the first page and that `400` on the second.
+
+Found 2026-10-09 by an adversarial review of the folder-aware Keys panel.
+
+**Done when:** the route refuses an answered cursor that does not match the declared shape with a `500` naming the provider, on every walk, with route tests for a `decimal` and an `"opaque"` declaration.
+
+### U106. A Scan all whose walk was reset writes its ending onto the next walk
+
+`scanAll` in `src/components/key-browser/use-key-scan.ts` applies its ending after its loop, `setScanningAll(false)` and, when `stopped.current` is set, `setStoppedBy("Stopped.")`, without checking that its walk is still the current one.
+`reset` sets `stopped.current` to end that loop, so a Scan all whose page is in flight when the walk is reset writes `Stopped.` onto the fresh walk.
+Measured 2026-10-10 with a hook test: start `scanAll()` with its first page held, call `reset()` and release the page, and `stoppedBy` reads `"Stopped."` where `null` is expected.
+Read from the code and not measured: a Scan all started on the new walk sets `stopped.current` back to `false`, so the old loop asks for another page, is refused while the new page is in flight, and calls `setScanningAll(false)` while the new loop still runs.
+`main` has the same tail.
+
+Found 2026-10-09 by an adversarial review of the folder-aware Keys panel; pre-existing.
+
+**Done when:** the loop checks its walk generation before it writes anything, with a hook test for each of the two cases.
+
+### U107. While the Keys panel waits for a database list, the previous walk stays live
+
+When the Keys panel is handed a database on a connection whose database list has not answered yet, its restart waits for that list before it resets the walk (`waitingForChosenDatabase` in `src/components/key-browser/KeyBrowser.tsx`), so until then the previous walk's state is the panel's state.
+Its rows and progress line stay drawn under the new connection and its keys open on it, and Scan more, Scan all and a folder's Load more stay enabled and send the previous walk's cursors (`scanMore` and `loadMoreUnder` in `src/components/key-browser/use-key-scan.ts` read them from the unreset walk).
+Measured 2026-10-10 in a panel test with two Redis-shaped connections: the panel walked the first, which answered cursor `"7"`; re-rendered with the second connection and a requested database whose list never answered, Scan more was enabled and sent `{"cursor":"7"}` to the second connection, with no `database` field, because the panel names no database before the list answers.
+A panel test the same day drew the first connection's rows (`old:*`) and its progress line (`Scanned 2/900`) under the second connection during the wait, and a hook test that changes the database without a reset sends `{"cursor":"7","database":2}`.
+A page asked for by the previous walk no longer writes anything once the question changes; what that walk already drew is what stays.
+`main` has the same path.
+
+Found 2026-10-10 by an adversarial review of the folder-aware Keys panel; pre-existing.
+
+**Done when:** the walk is reset when the question changes, whether or not the panel waits, and no page is asked for until the chosen database's list answers, with a panel test that switches connection during the wait and finds none of the previous walk's rows, no enabled Scan more, Scan all or Load more, and no request carrying its cursors.
+
+### U108. The Keys panel carries a Browse Keys pattern to the next connection
+
+Browse Keys hands the Keys panel its pattern through a request the Sidebar keeps in state (`keyPatternRequest` in `src/components/sidebar/Sidebar.tsx`), which stays set when the reader switches connection, and the panel starts its pattern from that request (`useState(request?.pattern ?? "")` in `src/components/key-browser/KeyBrowser.tsx`).
+So the Keys panel of the next connection opens on the previous connection's pattern, which may match nothing there.
+Measured 2026-10-10 in a browser on the folder-aware Keys panel branch: after Browse Keys on the Redis row `bulk:*`, the Keys panels of an etcd connection, an Oxia connection and a second etcd connection opened with the key prefix `bulk:*` and read `Scanned 0`.
+`main` has the same code in both places.
+
+Found 2026-10-10 by the browser pass of the folder-aware Keys panel; pre-existing.
+
+**Done when:** a Browse Keys request belongs to the connection it was made on, so the Keys panel of another connection opens without it, with a Sidebar test that does Browse Keys, switches connection, and finds the panel's pattern empty.
 
 ## Dependencies
 
@@ -4471,6 +4770,23 @@ Found 2026-10-04 while planning the platform integration, whose gates run in a g
 Not fixed there: that work runs the scan with those two mounts and counts `0 commits scanned.` as a failure, and `CONTRIBUTING.md` is outside it.
 
 **Done when:** `CONTRIBUTING.md` gives a command that scans the branch from a git worktree as well as from a clone, for example by mounting the worktree and the main checkout's `.git` at their own absolute paths, and says that a scan reporting `0 commits scanned.` checked nothing.
+
+### DOC19. CLAUDE.md names a mongodb branch that moved and a Redis method that no longer exists
+
+`CLAUDE.md` (Architecture) lists `src/lib/editor/tab-language.ts` among the three UI files that keep a `=== "mongodb"` branch, but that file has none; the branches are in `src/hooks/use-connection-form.ts` (`type === "mongodb" && authSource`) and `src/components/ConnectionModal.tsx` (`isMongoDB`).
+`CLAUDE.md` (Database Connections) says Redis `getSchema()` uses a non-blocking `SCAN`, but `getSchema` left the provider contract in #789 (`src/lib/db/base-provider.ts`), and comments in `src/lib/db/providers/keyvalue/redis.ts` still name it.
+
+Found 2026-10-09 while designing the S3 provider; pre-existing.
+
+**Done when:** `CLAUDE.md` names the files that hold the branches today and describes the Redis key walk by the method that exists, and the Redis comments name it too.
+
+### DOC20. docs/ADDING_A_PROVIDER.md carries stale counts and an incomplete label table
+
+The guide says seven translated READMEs are gated by `readme:check` where `scripts/readme-check.mjs` gates eight (`README_ko.md` joined in 3d9689aaf); its `getCapabilities()` bullet names two query languages (`sql` | `json`) where its own `ProviderCapabilities` table lists all five; says `QueryEditor` registers six language modules where it registers seven plus `registerDialectConsoles`; has no row for `sessionsEmptyState`, `tableStatsCaption` or `vacuumActionOperation` in its `ProviderLabels` table; and gives two driver-free counts, thirteen in its first decision and fifteen in its checklist.
+
+Found 2026-10-09 while designing the S3 provider; pre-existing.
+
+**Done when:** each count is derived from the code it describes, the label table matches `ProviderLabels`, and the guide states one driver-free count with the list it counts.
 
 ## Release pipeline
 
@@ -5822,6 +6138,15 @@ The warning is a hint, not a refusal (Apply to editor still works), but it marks
 Found 2026-10-07 by the browser pass of PR #1570 (Spec A seed sources); pre-existing.
 
 **Done when:** a `FROM` inside a call's parentheses is not read as a table position; a name qualified by a schema the provider declares as its engine's own catalog, through a capability built from the lists the providers already hold and no per-engine list in `src/lib/agent`, is reported as not checked rather than unknown; `docs/AGENT_DEMO.md` says what the check covers, including that an unqualified catalog name such as `pg_class` still gets the warning; and tests in `tests/unit/lib/agent/plan-statement.test.ts` pin both cases while an invented `sales.orders` is still reported.
+
+### B103. Databend has no agent execution and no MCP `run_read_query`
+
+The Databend provider implements no `queryReadOnly`, so `AGENT_EXECUTION_ENGINES` does not name it, agent auto mode refuses it, and MCP `run_read_query` answers that the engine is not served; plan mode and the MCP metadata tools work (`MCP_EXPOSABLE.databend` is true).
+No statement classifier can be the boundary there: `nextval`, `EXECUTE IMMEDIATE`, `CALL`, a `SETTINGS (...)` clause and six table functions (`fuse_amend`, `set_cache_capacity`, `fuse_vacuum2`, `fuse_vacuum_temporary_table` and the two `fuse_vacuum_drop_*_index`) write from a SELECT shape, and Databend has no read-only session the provider can open.
+
+Found 2026-10-07 while designing the Databend provider (design 5.7).
+
+**Done when:** a statement contract for Databend is measured and `queryReadOnly` implements it, `AGENT_EXECUTION_ENGINES` and `RUN_READ_QUERY_ENGINES` name Databend, and an agent run and an MCP call each drive a SELECT-shaped writer to its refusal in a test.
 
 ## Passkey deferrals (#785)
 

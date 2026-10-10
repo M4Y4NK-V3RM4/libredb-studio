@@ -936,15 +936,18 @@ export class MongoDBProvider extends BaseDatabaseProvider {
       // here (#414).
       declaresForeignKeys: false,
       supportsMaintenance: true,
-      maintenanceOperations: ["vacuum", "analyze", "check"],
+      maintenanceOperations: ["vacuum", "analyze", "check", "kill"],
       // `validate` and `compact` are both per-collection commands that this provider
       // also loops over `listCollections()` when no target is named, so both
       // placements are real. `dbCheck` is not looped and refuses to run without a
-      // collection name, so it is offered on a collection row only (#496).
+      // collection name, so it is offered on a collection row only (#496). `kill` is
+      // `killOp` on a session row's opid, which neither a collection row nor a
+      // whole-database card can supply (#1424).
       maintenanceOperationSpecs: {
         vacuum: { label: "Compact Collection", perEntity: true, global: true },
         analyze: { label: "Validate Collection", perEntity: true, global: true },
         check: { label: "Check Collection", perEntity: true, global: false },
+        kill: { label: "Kill Operation", perEntity: false, global: false },
       },
       supportsConnectionString: true,
       defaultPort: 27017,
@@ -1022,6 +1025,21 @@ export class MongoDBProvider extends BaseDatabaseProvider {
       return;
     }
 
+    // The refusal the driver's monitoring saw, kept from the heartbeat events the
+    // client relays. When the request's deadline closes the client underneath a
+    // connect that is still selecting, the wait queue is drained with
+    // `MongoTopologyClosedError` (`topology.js`), which names no reason at all, so
+    // without this the person is told "client closed" over the `ECONNREFUSED` the
+    // driver already knew (#1573).
+    let lastRefusal: Error | undefined;
+    const onHeartbeatFailed = (event: mongodbDriver.ServerHeartbeatFailedEvent) => {
+      lastRefusal = event.failure;
+    };
+    // The client this connect created, for the second close on the deadline path:
+    // once the deadline has closed it, `this.client` is null and the settle handler
+    // in the race below would otherwise have nothing to close again.
+    let clientToClose: MongoClient | null = null;
+
     try {
       const connectionString = this.buildConnectionString();
       const options: MongoClientOptions = {
@@ -1034,18 +1052,64 @@ export class MongoDBProvider extends BaseDatabaseProvider {
       };
 
       this.client = new MongoClient(connectionString, options);
-      await this.client.connect();
+      this.client.on("serverHeartbeatFailed", onHeartbeatFailed);
+      clientToClose = this.client;
 
-      // Get database name from connection string or config
-      const dbName = this.getDatabaseName();
-      this.db = this.client.db(dbName);
+      // The request's own bound on this connect (#1573). `serverSelectionTimeoutMS`
+      // is client-wide and has to clear a replica set election, so the driver holds
+      // a closed port for its full 30 s (#1458, #1518). `queryTimeout` is the
+      // deadline the request that started this connect already carries, so the race
+      // answers within it while every later operation keeps the 30 s election bound.
+      const connecting = this.client.connect();
+      let timedOut = false;
+      const deadline = new Promise<"deadline">((resolve) => {
+        const timer = setTimeout(() => {
+          timedOut = true;
+          resolve("deadline");
+        }, this.queryTimeout);
+        // The connect settled first: the timer must not hold the process open.
+        // When the deadline had already won, the settled connect closes the
+        // client a second time: over `mongodb+srv` the first close can land
+        // before the topology exists (`MongoClient._connect` resolves SRV
+        // before it creates the topology and never checks `hasBeenClosed`),
+        // so the topology created afterwards stays open. `finally` covers both
+        // settle outcomes; the catch below owns the cleanup when the driver
+        // refuses before the deadline.
+        connecting
+          .finally(() => {
+            if (timedOut) {
+              void clientToClose?.close().catch(() => {});
+            } else {
+              clearTimeout(timer);
+            }
+          })
+          .catch(() => {});
+      });
+      const first = await Promise.race([connecting, deadline]);
+      if (first !== "deadline" && !timedOut) {
+        await connecting;
 
-      // Test connection
-      await this.db.command({ ping: 1 });
+        // Get database name from connection string or config
+        const dbName = this.getDatabaseName();
+        this.db = this.client.db(dbName);
 
-      this.setConnected(true);
+        // Test connection
+        await this.db.command({ ping: 1 });
+
+        this.setConnected(true);
+        return;
+      }
     } catch (error) {
       this.setError(error instanceof Error ? error : new Error(String(error)));
+      // The error path must leave no client behind (#1573): `connect()` used to keep
+      // `this.client` set while `this.db` stayed null, so a later `connect()` found
+      // the half-open one and returned as if it were connected.
+      if (this.client) {
+        const client = this.client;
+        this.client = null;
+        this.db = null;
+        await client.close().catch(() => {});
+      }
       throw new ConnectionError(
         `Failed to connect to MongoDB: ${error instanceof Error ? error.message : error}`,
         "mongodb",
@@ -1053,6 +1117,27 @@ export class MongoDBProvider extends BaseDatabaseProvider {
         this.config.port,
       );
     }
+
+    // The request's deadline closed this connect (#1573). Reached only on the timed
+    // out path, outside the catch above so the refusal is not wrapped twice.
+    // Draining the selection wait queue with `MongoTopologyClosedError` is what
+    // `Topology.close()` does (`topology.js:246-255`), so the in-flight connect
+    // rejects on its own. The client is closed again once the connect settles
+    // (`connecting.then` in the race above), so no client and no socket outlives
+    // the request even when the first close lands during the SRV window and is a
+    // no-op (`mongo_client.js`, see above).
+    const refusal = lastRefusal?.message ?? `timed out after ${this.queryTimeout} ms`;
+    const client = this.client;
+    this.client = null;
+    this.db = null;
+    this.setError(new Error(refusal));
+    void client?.close().catch(() => {});
+    throw new ConnectionError(
+      `Failed to connect to MongoDB: ${refusal}`,
+      "mongodb",
+      this.config.host,
+      this.config.port,
+    );
   }
 
   public async disconnect(): Promise<void> {
@@ -1918,6 +2003,12 @@ export class MongoDBProvider extends BaseDatabaseProvider {
           durationMs,
           waitEventType: op.waitingForLock ? "Lock" : undefined,
           waitEvent: op.lockStats ? "Acquiring lock" : undefined,
+          // `$all` also answers rows `killOp` cannot end: an idle connection and a server thread carry no
+          // opid, and a server job with one (`Checkpointer`, `JournalFlusher`) answers `killOp` with
+          // "attempting to kill op" and keeps running, measured on MongoDB 9.0.2 (#1424). This read's own
+          // `currentOp` is listed too and has finished before anyone can click it. Only another client's
+          // operation is offered Terminate.
+          ...(op.opid === undefined || !op.client || op.command?.currentOp !== undefined ? { terminable: false } : {}),
         };
       });
     } catch (error) {
@@ -1957,6 +2048,12 @@ export class MongoDBProvider extends BaseDatabaseProvider {
       ) {
         continue;
       }
+
+      // Every other namespace the server reserves, `system.views` included. The object
+      // browser already skips these through `MONGODB_INTERNAL_PREFIX`; Monitoring was
+      // listing them as tables (#1428). `systemetrics` does not start with the prefix
+      // and stays.
+      if (collName.startsWith(MONGODB_INTERNAL_PREFIX)) continue;
 
       try {
         const collStats = await this.db!.command({ collStats: collName });

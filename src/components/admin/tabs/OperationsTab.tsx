@@ -21,6 +21,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { TypedConfirmDialog } from "@/components/typed-confirm";
 import {
   MaintenanceEntityDialog,
+  READ_ONLY_MAINTENANCE,
   closedEntityDialog,
   entityRequest,
   type EntityDialogOpening,
@@ -51,8 +52,10 @@ import { useAllConnections } from "@/hooks/use-all-connections";
 import {
   declaredEntityOperations,
   maintenanceControl,
+  offersSessionTermination,
   type ActiveSessionDetails,
   type MaintenanceOperation,
+  type MaintenanceResult,
   type MaintenanceType,
   type TableStats,
 } from "@/lib/db/types";
@@ -169,6 +172,50 @@ function closedDialog(current: TypedDialogOpening | null): TypedDialogOpening | 
 const UNNAMED_CONNECTION =
   "This operation is confirmed by typing the connection's name, and this connection has none. Give it a name in its connection settings first.";
 
+/**
+ * The table a maintenance call handed back. Redis Run Info is the one that has rows:
+ * each `INFO` metric is one row, and the panel scrolls because a full reply is a
+ * couple of hundred of them (#1453).
+ */
+function MaintenanceResultTable({ report }: { report: Pick<MaintenanceResult, "rows" | "fields"> }) {
+  const rows = report.rows ?? [];
+  const fields = report.fields ?? [];
+  return (
+    <div className="rounded-xl border border-hairline bg-panel" data-testid="maintenance-result">
+      <div className="p-4 border-b border-hairline">
+        <span className="text-xs font-bold text-fg-secondary">Result ({rows.length})</span>
+      </div>
+      <div className="max-h-[360px] overflow-y-auto">
+        <Table>
+          <TableHeader>
+            <TableRow className="border-hairline hover:bg-transparent">
+              {fields.map((field) => (
+                <TableHead key={field} className="text-xs text-fg-muted font-bold uppercase">
+                  {field.charAt(0).toUpperCase() + field.slice(1)}
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((row) => (
+              <TableRow
+                key={fields.map((field) => String(row[field] ?? "")).join("\u001f")}
+                className="border-hairline hover:bg-fill"
+              >
+                {fields.map((field) => (
+                  <TableCell key={field} className="font-mono text-xs text-fg-secondary py-2 align-top break-all">
+                    {String(row[field] ?? "")}
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
 export function OperationsTab() {
   // Only the operator's CHOICE is state; the list and the selected object are both
   // calculated during render from it. `useAllConnections` is read here, above the
@@ -251,10 +298,8 @@ export function OperationsTab() {
   // is reactive so it settles as soon as the capability arrives.
   const monitoringOptions = useMemo(() => ({ includeTables: true, includeIndexes: false, includeStorage: false }), []);
 
-  const { data, loading, error, refresh, killSession, runMaintenance, previewMaintenance } = useMonitoringData(
-    selectedConnection,
-    monitoringOptions,
-  );
+  const { data, loading, error, refresh, killSession, runMaintenanceOutcome, maintenanceReport, previewMaintenance } =
+    useMonitoringData(selectedConnection, monitoringOptions);
   // Both maintenance surfaces ask ONE question - `maintenanceControl` in
   // src/lib/db/types.ts - so that neither can offer a control the other's engine
   // rejects. `capabilities` may be undefined here (provider-meta in flight, or its
@@ -272,6 +317,8 @@ export function OperationsTab() {
   );
   const offers = (type: MaintenanceType, placement: "perEntity" | "global") =>
     maintenanceControl(capabilities, type, placement).offered;
+  // A session row's Terminate sends `kill`, which the route refuses wherever it is not declared (#1424).
+  const offersTerminate = offersSessionTermination(capabilities);
   // The six analyze/vacuum global ProviderLabels fields were declared, set by
   // seven providers, and read by no component, so every engine rendered
   // Postgres's query-planner copy (#427).
@@ -327,7 +374,7 @@ export function OperationsTab() {
 
   // The per-row controls, in the provider's own words: the tab's own candidates, then every declared operation outside
   // `MaintenanceType` that runs on one row, in declaration order and under a generic icon (spec 3.11).
-  const tableActions: TableAction[] = [
+  const declaredTableActions: TableAction[] = [
     ...TABLE_ACTIONS.flatMap((action) => {
       const control = maintenanceControl(capabilities, action.type, "perEntity");
       return control.offered ? [{ ...action, label: control.label ?? action.label }] : [];
@@ -339,6 +386,14 @@ export function OperationsTab() {
       hover: "hover:text-brand",
     })),
   ];
+  // A read-only connection's provider refuses these as it refuses the whole-database ones, so a row draws none of
+  // them: the same rule the Global Operations section follows, read from the same public field (#1418). Offered, each
+  // one led to a refusal the route had to make.
+  const readOnly = selectedConnection?.readOnly === true;
+  const tableActions = readOnly ? [] : declaredTableActions;
+  // The section's own line already explains the missing controls wherever it is drawn. An engine whose only
+  // operations run on one row (Milvus's Load and Release) draws no such section, so the rows say it themselves.
+  const rowsSayReadOnly = readOnly && !anyMaintenance && declaredTableActions.length > 0;
 
   const handleConnectionChange = (id: string) => {
     const conn = connections.find((c) => c.id === id);
@@ -368,17 +423,32 @@ export function OperationsTab() {
   // Same reason as TablesTab: `table.schemaName` is the namespace for every engine, and the
   // row keys on it already. The log entry keeps naming the table alone, since that is what an
   // operator reads back (#772).
-  const runMaintenanceNow = async (type: MaintenanceOperation, target?: string, container?: string) => {
+  //
+  // Answers the reason a run was refused for, or null once it was sent: the per-row dialog shows it in place of
+  // closing, and the log entry carries it, so a refusal is read where the operator is looking (#1418).
+  const runMaintenanceNow = async (
+    type: MaintenanceOperation,
+    target?: string,
+    container?: string,
+  ): Promise<string | null> => {
     const actionId = `${type}-${target || "global"}`;
     setActionLoading(actionId);
     const start = Date.now();
     try {
-      const success = await runMaintenance(type, target, container);
+      const outcome = await runMaintenanceOutcome(type, target, container);
       const duration = Date.now() - start;
-      addLogEntry(type.toUpperCase(), target || "all", success ? "success" : "failure", duration);
+      addLogEntry(
+        type.toUpperCase(),
+        target || "all",
+        outcome.success ? "success" : "failure",
+        duration,
+        outcome.error,
+      );
+      return outcome.success ? null : (outcome.error ?? `${type} failed`);
     } catch {
       const duration = Date.now() - start;
       addLogEntry(type.toUpperCase(), target || "all", "failure", duration);
+      return `${type} failed`;
     } finally {
       setActionLoading(null);
     }
@@ -705,11 +775,11 @@ export function OperationsTab() {
       {anyMaintenance && selectedConnection?.readOnly === true && (
         <div data-testid="operations-read-only">
           <GlobalOperationsHeading />
-          <p className="text-xs text-fg-muted leading-relaxed">
-            This connection is read-only: use a read-write connection for maintenance
-          </p>
+          <p className="text-xs text-fg-muted leading-relaxed">{READ_ONLY_MAINTENANCE}</p>
         </div>
       )}
+
+      {maintenanceReport && <MaintenanceResultTable report={maintenanceReport} />}
 
       {/* Tables + Sessions Split */}
       <div className="grid gap-6 md:grid-cols-2">
@@ -814,6 +884,11 @@ export function OperationsTab() {
                 </div>
               )}
             </div>
+            {rowsSayReadOnly && (
+              <p className="px-4 pb-4 text-xs text-fg-muted leading-relaxed" data-testid="operations-rows-read-only">
+                {READ_ONLY_MAINTENANCE}
+              </p>
+            )}
             {maintenanceUnreachable && (
               <TableMaintenanceUnreachableNote
                 actions={tableActions.map((a) => a.label)}
@@ -918,20 +993,22 @@ export function OperationsTab() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right py-2">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6 text-fg-subtle hover:text-danger hover:bg-danger-tint/10 opacity-0 group-hover:opacity-100 transition-all"
-                          onClick={() => handleKillClick(session)}
-                          aria-label={`Terminate session ${session.pid}`}
-                          disabled={killingPid === session.pid}
-                        >
-                          {killingPid === session.pid ? (
-                            <LoaderCircle className="h-3 w-3 animate-spin" />
-                          ) : (
-                            <Skull className="h-3 w-3" />
-                          )}
-                        </Button>
+                        {offersTerminate && session.terminable !== false && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 text-fg-subtle hover:text-danger hover:bg-danger-tint/10 opacity-0 group-hover:opacity-100 transition-all"
+                            onClick={() => handleKillClick(session)}
+                            aria-label={`Terminate session ${session.pid}`}
+                            disabled={killingPid === session.pid}
+                          >
+                            {killingPid === session.pid ? (
+                              <LoaderCircle className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <Skull className="h-3 w-3" />
+                            )}
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -965,6 +1042,11 @@ export function OperationsTab() {
                   {entry.type}
                 </Badge>
                 <span className="text-fg-tertiary font-mono truncate">{entry.target}</span>
+                {entry.error !== undefined && (
+                  <span className="text-danger truncate" title={entry.error} data-testid="operation-log-error">
+                    {entry.error}
+                  </span>
+                )}
                 <div className="ml-auto flex items-center gap-2 shrink-0">
                   {entry.result === "success" ? (
                     <CircleCheck className="w-3 h-3 text-success" />
@@ -1073,10 +1155,10 @@ export function OperationsTab() {
           request={entityDialog.request}
           loadPreview={previewMaintenance}
           onConfirm={async () => {
-            // The outcome is the notification and the operation log, as for every other control on this tab.
+            // A run that was sent closes the dialog on the notification and the operation log, as every other control
+            // on this tab ends. A refused one keeps it open on the route's own sentence.
             const { type, target, container } = entityDialog.request;
-            await runMaintenanceNow(type, target, container);
-            return null;
+            return runMaintenanceNow(type, target, container);
           }}
         />
       )}

@@ -162,13 +162,13 @@ id, so no reader can grow a dialect test of its own.
 | Character | Established reading | Dialects |
 |-----------|--------------------|----------|
 | `#` | opens a line comment | MySQL, MariaDB, ClickHouse (which also has `#!`), OpenSearch |
-| `#` | ordinary code — a jsonb/geometric operator, an identifier character, a temp-table name, a bind-variable prefix, or a character the parser simply refuses | PostgreSQL, Oracle, Db2 LUW, SQL Server, SQLite, libSQL, DuckDB, Elasticsearch, Trino |
+| `#` | ordinary code — a jsonb/geometric operator, an identifier character, a temp-table name, a bind-variable prefix, or a character the parser simply refuses | PostgreSQL, Oracle, Db2 LUW, SQL Server, SQLite, libSQL, DuckDB, Elasticsearch, Trino, Databend |
 | `q'…'` | a string literal (alternate quoting): the delimiter after the tag opens the body and its partner followed by `'` closes it, so the body carries apostrophes unescaped — `[ ] { } ( ) < >` pair up, any other character closes with itself, either letter case of the tag, and `nq'…'` is the same form for the national character set | Oracle only |
 | `q'…'` | not a form at all — a name followed by an ordinary string, which is what those characters are there | everything else, including the default |
 | `[…]` | a quoted **name**: everything between the brackets is the identifier (`SELECT [a--b] FROM t` selects a column called `a--b`) and the run does not nest. The doubled `]` this reading honours is SQL Server's escape — SQLite stops at the first `]` and has none, so `[a]]b]` reads as one name where SQLite reads `[a]` and then junk, which it rejects either way | SQL Server, SQLite, libSQL, OpenSearch |
-| `[…]` | an **array literal or subscript**: it nests (`[[1,2],[3,4]]`), nothing inside it is escaped, and a literal inside it is a literal (`m['a]b']`) | ClickHouse, PostgreSQL, DuckDB, Trino |
+| `[…]` | an **array literal or subscript**: it nests (`[[1,2],[3,4]]`), nothing inside it is escaped, and a literal inside it is a literal (`m['a]b']`) | ClickHouse, PostgreSQL, DuckDB, Trino, Databend |
 | `/* … /* … */ … */` | one **nesting** comment: a `/*` inside a comment opens another and the run continues until the depth returns to zero, so a region that already contains comments can be commented out. A run short of a closer is undeterminable rather than closed early | PostgreSQL, Db2 LUW, SQL Server, ClickHouse, DuckDB |
-| `/* … /* … */ … */` | a **flat** comment: the first `*/` ends it, and everything after that is the statement's own code | MySQL, MariaDB, SQLite, libSQL, Oracle, and the default |
+| `/* … /* … */ … */` | a **flat** comment: the first `*/` ends it, and everything after that is the statement's own code | MySQL, MariaDB, SQLite, libSQL, Oracle, Databend, and the default |
 | `//` | opens a **line comment**, ending at the newline like `--` | Apache Cassandra (and its relatives), ClickHouse |
 | `//` | **ordinary code** — an operator the parser refuses (`operator does not exist: integer // integer` on PostgreSQL 18), or a character it rejects outright | everything else, including the default |
 
@@ -195,7 +195,7 @@ Beyond it, each type whose text is not SQL has a row of its own in `NON_SQL_DEST
 The MongoDB and Redis rows name the destructive operations the provider can actually dispatch (`deleteOne`/`deleteMany`/`updateOne`/`updateMany` and the `$out`/`$merge` pipeline stages for MongoDB; `DEL`, `FLUSHALL`, `SET`, `CONFIG SET` and the rest for Redis), and the gate reduces the buffer the way the provider would, to one JSON document or, for Redis, to the one command the provider's own `readRedisCommandText()` reads (each line is a command, and a second one is refused in the editor before anything is sent), before looking a name up in it.
 Text it cannot read as a command at all is not treated as safe: mongosh syntax, a half-typed document or a broken JSON command body **asks**.
 Before that table existed the answer for both types was a bare `false`, so a `FLUSHALL` and a `deleteMany` ran with no confirmation while a `DELETE FROM` on every SQL engine asked.
-The Prometheus and Kafka rows name no operation, the etcd row names what `guard.ts` classifies, and each of the three is the gate's whole answer, the rows the keyword test does not read in front of: PromQL has no statement that writes, its editor text only ever reaches `POST /api/v1/query`, and a metric may legally be named `update`, `delete` or `drop`, which the keyword test read as a write; a Kafka read request only reads, and a topic may be named any of those too; and etcd's text is read by `guard.ts` over `commands.ts`, the provider's own parser, so a key named `update` or `drop` is data and never a SQL keyword.
+The Prometheus and Kafka rows name no operation, the etcd row names what `guard.ts` classifies, the Neo4j row is a fourth that names no operation and decides alone, and each of the four is the gate's whole answer, the rows the keyword test does not read in front of: PromQL has no statement that writes, its editor text only ever reaches `POST /api/v1/query`, and a metric may legally be named `update`, `delete` or `drop`, which the keyword test read as a write; a Kafka read request only reads, and a topic may be named any of those too; etcd's text is read by `guard.ts` over `commands.ts`, the provider's own parser, so a key named `update` or `drop` is data and never a SQL keyword; and Neo4j's provider refuses every write before it is sent - its read policy denies every word that writes and its statement gate classifies the statement through `EXPLAIN`, failing closed - so there is no write left that an operation name would have to catch.
 The InfluxDB (InfluxQL) row is read by the InfluxQL policy the provider runs (`src/lib/db/providers/timeseries/influxdb/influxql-policy.ts`), so what asks and what runs are one reading: an allowed statement only reads, so nothing asks, and what the policy refuses the editor refuses before anything is sent.
 InfluxDB 3 (SQL) is not in that set: its text is SQL, read under the DataFusion row of `SQL_GRAMMARS`.
 The Oxia row names no operation and, like the etcd row, is the gate's whole answer: Oxia's text is read by `guard.ts` over `commands.ts`, the provider's own parser, so a key named `update` or `drop` is data and never a SQL keyword.
@@ -206,8 +206,8 @@ The embedded LibreDB is not in that set: its text is read as SQL, and its undeci
 | `#` | Couchbase, Druid, the embedded LibreDB provider | — |
 | `q'…'` | nobody | everything except Oracle: the form is Oracle's alone, so "not a literal" is the correct reading for the rest |
 | `[…]` | MySQL, Oracle, Db2 LUW, Elasticsearch, Couchbase, Druid, LibreDB | SQL Server, SQLite, libSQL and OpenSearch, whose rule the default already applied |
-| `/* … */` nesting | Couchbase, Druid, LibreDB | MySQL, SQLite, libSQL, Oracle, Elasticsearch, OpenSearch and Trino, whose flat rule the default already applied — each established from its own source rather than assumed to agree |
-| `//` | Elasticsearch, OpenSearch, Couchbase, Druid, LibreDB | PostgreSQL, MySQL, SQLite, libSQL, DuckDB, Oracle, Db2 LUW, SQL Server and Trino, each refused on a live server: `SELECT 1 // note` is an error there, so "not a comment" is the reading the default already applied |
+| `/* … */` nesting | Couchbase, Druid, LibreDB | MySQL, SQLite, libSQL, Oracle, Elasticsearch, OpenSearch, Trino and Databend, whose flat rule the default already applied — each established from its own source rather than assumed to agree |
+| `//` | Elasticsearch, OpenSearch, Couchbase, Druid, LibreDB | PostgreSQL, MySQL, SQLite, libSQL, DuckDB, Oracle, Db2 LUW, SQL Server and Trino, each refused on a live server: `SELECT 1 // note` is an error there, so "not a comment" is the reading the default already applied; Databend, whose lexer has `//` as an operator token |
 
 The distinction is visible in `src/lib/sql/grammar.ts` too: an established fact is written out in that
 dialect's row, an undecided one is written `DEFAULT_SQL_GRAMMAR.<fact>`.
@@ -289,7 +289,7 @@ inside the comment as well.
 Some dialects have a clause that is written **after** the row bound and refused before it
 (#1398). The dialect grammar declares them — `AS OF [AT LEAST] <t>` for Materialize's
 `postgres` route, `ALLOW FILTERING`, `BYPASS CACHE` and `USING TIMEOUT <duration>` for the
-`cassandra` type-id (Apache Cassandra and ScyllaDB) — and the bound is placed **before** the
+`cassandra` type-id (Apache Cassandra and ScyllaDB), `FORMAT <name>` for Databend — and the bound is placed **before** the
 declared run, which is re-attached verbatim:
 
 | Statement | Emitted SQL |
@@ -298,6 +298,7 @@ declared run, which is re-attached verbatim:
 | `SELECT * FROM t BYPASS CACHE` (ScyllaDB) | `SELECT * FROM t LIMIT 500 BYPASS CACHE` |
 | `SELECT * FROM t USING TIMEOUT 5s` (ScyllaDB) | `SELECT * FROM t LIMIT 500 USING TIMEOUT 5s` |
 | `SELECT * FROM t ALLOW FILTERING` (CQL) | `SELECT * FROM t LIMIT 500 ALLOW FILTERING` |
+| `SELECT number FROM numbers(10) FORMAT CSV` (Databend) | `SELECT number FROM numbers(10) LIMIT 500 FORMAT CSV` |
 | `SELECT * FROM t -- note` ⏎ `ALLOW FILTERING` (CQL) | `SELECT * FROM t LIMIT 500 -- note` ⏎ `ALLOW FILTERING` |
 
 A comment the writer put between the code and the clause stays between the bound and
@@ -380,7 +381,8 @@ trailing comment can reach — and it now declines whenever such a statement men
 `FETCH` at all, blunt on purpose, since a page cannot be ruled out from text nothing can read (#293).
 
 Providers that append a clause of their own follow the same rule: Oracle's `FETCH FIRST` and
-`OFFSET … FETCH NEXT`, and MSSQL's `OFFSET … FETCH NEXT` pagination branch. MSSQL's `SELECT TOP n`
+`OFFSET … FETCH NEXT`, Db2's `FETCH FIRST n ROWS ONLY` or `OFFSET m ROWS FETCH NEXT n ROWS ONLY` past
+the first page, and MSSQL's `OFFSET … FETCH NEXT` pagination branch. MSSQL's `SELECT TOP n`
 splices into the head, which no trailing comment can reach, so it keeps bounding a statement whose end
 may not be cut — with the one exception above. MSSQL also recognises a page form of its own that the
 shared probes above do not, `OFFSET n ROWS` with no `FETCH` tail; it is read in that provider, because
@@ -585,9 +587,10 @@ The accepted cost, pinned by tests rather than left to be discovered, in two cla
 - **A closing quote behind an odd backslash run** is reported undeterminable whatever the dialect, and
   this is the most frequent prompt the rule buys: it covers a literal ending in a backslash (a Windows
   path) *and* `\'` as an escaped apostrophe — which is MySQL's own escape, so an everyday MySQL read
-  such as `… WHERE name = 'O\'Brien'` asks on every execute. Naming the dialect does not narrow this
-  one, because whether `\` escapes is deliberately not a fact the grammar record carries yet (fixtures
-  across this milestone rest on the undeterminable reading). What does *not* happen is a prompt
+  such as `… WHERE name = 'O\'Brien'` asks on every execute.
+  Naming a shipped dialect does not narrow this one, with one exception: the grammar record carries the fact as `backslashAlwaysEscapes`, and every row declares it false, MySQL included because `NO_BACKSLASH_ESCAPES` in `sql_mode` changes its reading per session.
+  Databend's row declares it true, because its lexer escapes with a backslash in both quotes and no setting turns that off, so there `'it\'s'` is one closed literal and a backslash before a line feed leaves the literal open.
+  What does *not* happen is a prompt
   for a statement that merely contains a backslash — `SELECT 'a\nb' FROM t`, `… LIKE 'a\_b'` and
   `'C:\\Users\\me'` all resolve and run without one.
 - **A bracketed run a dialect at the default bracket reading cannot close.** `[…]` is read as SQL

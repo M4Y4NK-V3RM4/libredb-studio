@@ -15,6 +15,7 @@
   <a href="README_es.md">Español</a> ·
   <a href="README_ur.md">اردو</a> ·
   <a href="README_hi.md">हिन्दी</a> ·
+  <a href="README_ko.md">한국어</a> ·
   <b>Português (Brasil)</b> ·
   <a href="README_ru.md">Русский</a>
 </p>
@@ -31,6 +32,7 @@
 </p>
 <p align="center">
   Também listado na documentação oficial de
+  <a href="https://node-oracledb.readthedocs.io/en/latest/user_guide/appendix_b.html#libredb-studio">Oracle</a>,
   <a href="https://planet.mysql.com/showcase/?search=LibreDB">MySQL</a>,
   <a href="https://redis.io/docs/latest/develop/tools/#libredb-studio">Redis</a>,
   <a href="https://clickhouse.com/docs/integrations/connectors/tools/gui#libredb-studio">ClickHouse</a>,
@@ -44,8 +46,11 @@
   <a href="https://opensearch.org/community-projects/#:~:text=LibreDB%20Studio">OpenSearch</a>,
   <a href="https://duckdb.org/docs/preview/guides/sql_editors/libredb_studio">DuckDB</a>,
   <a href="https://docs.starrocks.io/docs/integrations/IDE_integrations/LibreDB_Studio/">StarRocks</a>,
+  <a href="https://docs.databend.com/guides/connect/sql-clients/libredb-studio">Databend</a>,
   <a href="https://aiven.io/docs/products/postgresql/howto/connect-libredb-studio">Aiven for PostgreSQL</a>,
-  <a href="https://aiven.io/docs/products/mysql/howto/connect-libredb-studio">Aiven for MySQL</a>
+  <a href="https://aiven.io/docs/products/mysql/howto/connect-libredb-studio">Aiven for MySQL</a>,
+  <a href="https://cwiki.apache.org/confluence/display/KAFKA/Ecosystem#:~:text=LibreDB%20Studio">Apache Kafka</a>,
+  <a href="https://cassandra.apache.org/_/ecosystem.html">Apache Cassandra</a>
   e
   <a href="https://druid.apache.org/libraries/#:~:text=LibreDB%20Studio">Apache Druid</a>
 </p>
@@ -105,9 +110,9 @@ Levada a sério, essa frase deixa de ser preferência e vira especificação.
 
 ## Capacidades principais
 
-### Vinte e seis motores, uma única interface
+### Vinte e sete motores, uma única interface
 
-PostgreSQL · MySQL · Oracle · Db2 LUW · SQL Server · SQLite · libSQL · DuckDB · MongoDB · Redis · Couchbase · ClickHouse · Apache Druid · Elasticsearch · OpenSearch · Trino · Apache Cassandra · Prometheus · Apache Kafka · etcd · Neo4j · Milvus · Qdrant · InfluxDB (InfluxQL) · InfluxDB 3 (SQL) · Oxia
+PostgreSQL · MySQL · Oracle · Db2 LUW · SQL Server · SQLite · libSQL · DuckDB · MongoDB · Redis · Couchbase · ClickHouse · Apache Druid · Elasticsearch · OpenSearch · Trino · Databend · Apache Cassandra · Prometheus · Apache Kafka · etcd · Neo4j · Milvus · Qdrant · InfluxDB (InfluxQL) · InfluxDB 3 (SQL) · Oxia
 
 Todos os motores SQL compartilham o mesmo explorador de esquema, diagramas ER, comparação de esquema e painéis de monitoramento. MongoDB e Redis não são motores SQL: não têm diagrama ER nem comparação de esquema. Druid, Elasticsearch, OpenSearch e Trino são exceções duplas: suas interfaces SQL sobre HTTP não têm uma forma de URI que este build saiba interpretar, então se configuram por host e porta, e as migrações geradas explicam a limitação em vez de inventar DDL para um motor cujo SQL não tem comandos de alteração de coluna. O mesmo vale para coleções sem esquema no Couchbase. O diagrama ER dos clusters de busca tem caixas, mas não linhas: os índices não declaram chaves estrangeiras — e no modelo do motor não há nenhuma para declarar.
 
@@ -128,6 +133,7 @@ Todos os motores SQL compartilham o mesmo explorador de esquema, diagramas ER, c
 | **Elasticsearch** | Sem driver, HTTP puro (`POST /_sql?format=json`, porta 9200) | IDE SQL somente leitura, explorador de índices e campos baseado no mapping, saúde do cluster e contagem de documentos e tamanho por índice. Sem EXPLAIN, sem operações de manutenção e sem painéis de consultas lentas ou sessões. O SQL do Elasticsearch também não tem `OFFSET`, então não dá para pedir a segunda página de resultados |
 | **OpenSearch** | Sem driver, HTTP puro (`POST /_plugins/_sql`, porta 9200) | O mesmo módulo de provider que o Elasticsearch, com o mesmo IDE somente leitura e o mesmo explorador. Aqui `LIMIT n OFFSET m` funciona, então a paginação está disponível |
 | **Trino** | Sem driver, HTTP puro (protocolo de cliente, `POST /v1/statement`, porta 8080) | IDE SQL completo sobre todos os catálogos configurados, árvore de esquema via `information_schema` do catálogo fixado na conexão, monitoramento com `system.runtime` e `jmx`, contagens reais de linhas via `SHOW STATS`, cancelamento de consultas e manutenção com `kill_query`. Trino é um motor de consultas e não armazena dados, então não declara chaves primárias, estrangeiras nem índices em lugar nenhum: o diagrama ER tem caixas sem linhas, a edição inline fica desativada e o painel de capacidade lista catálogos em vez de inventar um tamanho. Consultas com falha também retornam HTTP 200; e mesmo com autenticação desligada no cluster, senha sobre HTTP em texto plano continua sendo rejeitada |
+| **Databend** | Sem driver, HTTP puro (a API de consultas própria do Databend, `POST /v1/query`, porta 8000) | IDE SQL contra um servidor Databend próprio ou um warehouse do Databend Cloud: catálogos e bancos de dados na árvore com tabelas, views, views materializadas e tabelas dinâmicas, planos `EXPLAIN` em texto, monitoramento com `system.*` do catálogo padrão e cancelamento de consultas com `KILL QUERY` pelo painel de sessões. Cada instrução roda numa sessão própria, então uma transação ou uma tabela temporária termina com a instrução que a abriu. O Databend não declara chaves, então a edição inline fica desativada, assim como o Create Table. Uma senha por HTTP sem criptografia para um host que não é loopback nem passa por túnel é recusada, a menos que a conexão consinta. Uma conexão ao Cloud nomeia seu warehouse, que é retomado, e cobrado, na primeira instrução, incluindo a abertura da conexão, porque ela lê a árvore de objetos. TLS com CA própria e certificados de cliente; túnel SSH |
 | **Apache Cassandra** | `cassandra-driver` (JavaScript puro, sem módulos nativos) | IDE CQL sobre o protocolo nativo (porta 9042), explorador de keyspaces com chaves de partição e de clustering marcadas, resumo via `system_views`, uptime e consultas em execução. A conexão **exige `localDataCenter`**: sem isso o driver se recusa a conectar. Não há EXPLAIN (a gramática CQL simplesmente não tem essa palavra-chave), não há cancelamento de consultas (o protocolo não tem frame de cancelamento) e não há operações de manutenção (compaction, repair e flush são operações JMX do `nodetool`). E **não mostra contagem de linhas nem tamanho**: o que o Cassandra consegue dar é uma estimativa de partições a partir dos arquivos já gravados em disco (uma tabela de 500 linhas foi lida como 143) e inteiros em MiB (uma tabela de 19.476 bytes aparece como `1 MiB`), então preferimos não mostrar nada a mostrar um número errado |
 | **Prometheus** | Sem driver, HTTP puro (a API HTTP do Prometheus, porta 9090) | Editor de PromQL que envia o texto ao servidor sem alterações, resultados na grade e na aba de gráficos (uma subconsulta com passo, como `rate(x[5m])[1h:1m]`, é plotada como linhas sobre seus timestamps: a aba abre com a primeira série, mais séries são adicionadas pelo menu Y-Axis, uma linha cada, e no máximo oito são desenhadas por vez, além disso aparece "Showing first 8 of N series"; mas o gráfico desenha em 0 uma amostra ausente e um `NaN` ou `Inf` entre números, então um range bruto sobre targets com offsets de scrape diferentes mostra zeros falsos), explorador de métricas com os nomes de label como colunas e os metadados como fonte, grupos de regras com regras de gravação e de alerta (um alerta disparado é marcado na árvore), pools e targets de scrape (um target fora do ar é marcado na árvore), e saúde, versão, uptime e estatísticas do TSDB. Somente leitura por design: não chama a API de administração, não faz remote write, não tem EXPLAIN (o endpoint de parse é experimental) nem operações de manutenção. Uma credencial sobre HTTP em texto plano é enviada em vez de recusada, então ative TLS se a conexão atravessa uma rede que você não controla |
 | **Apache Kafka** | `@platformatic/kafka` (TypeScript puro, porta 9092) | Uma requisição de leitura em JSON que lê um tópico por partição, offset ou timestamp, a partir do offset mais antigo ou das mensagens mais recentes, com chaves, valores e cabeçalhos decodificados como JSON, texto ou base64, e um valor no formato Confluent rotulado com o ID do schema; explorador de tópicos com partições e configurações não padrão (um tópico offline ou com réplicas insuficientes é sinalizado), grupos de consumidores de ambos os protocolos com lag por partição, brokers com suas configurações, além de informações de saúde, quantidade de tópicos e tamanho em disco. Somente leitura por design: não produz mensagens, não faz commit de offsets, não participa de grupos e não cria tópicos. TLS com CA personalizada e certificados de cliente, e SASL PLAIN ou SCRAM somente sobre TLS; sem túnel SSH, porque os brokers são acessados pelos endereços que anunciam |

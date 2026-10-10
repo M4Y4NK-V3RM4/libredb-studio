@@ -2,7 +2,12 @@ import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { diffSchemas } from "@/lib/schema-diff/diff-engine";
-import { generateMigrationSQL } from "@/lib/schema-diff/migration-generator";
+import {
+  DATABEND_COLUMN_MODIFICATION_REASON,
+  DATABEND_INDEX_REFUSAL,
+  DATABEND_PRIMARY_KEY_REASON,
+  generateMigrationSQL,
+} from "@/lib/schema-diff/migration-generator";
 import type { StoredObject } from "@/lib/db/detailed-object";
 import type { ColumnDiff, SchemaDiff } from "@/lib/schema-diff/types";
 import type { DatabaseType } from "@/lib/types";
@@ -322,7 +327,7 @@ describe("generateMigrationSQL: ALTER TABLE", () => {
 
   test("oracle: MODIFY() syntax", () => {
     const sql = generateMigrationSQL(makeModifiedTableDiff(), "oracle");
-    expect(sql).toContain('ALTER TABLE "users" MODIFY ("name"');
+    expect(sql).toContain(`ALTER TABLE "users" MODIFY ("name" varchar(255) DEFAULT 'unknown' NOT NULL);`);
   });
 });
 
@@ -699,8 +704,7 @@ describe("generateMigrationSQL: MSSQL/Oracle ALTER edge cases", () => {
       hasChanges: true,
     };
     const sql = generateMigrationSQL(diff, "oracle");
-    expect(sql).toContain("MODIFY");
-    expect(sql).toContain("DEFAULT 'active'");
+    expect(sql).toContain(`MODIFY ("status" VARCHAR2(50) DEFAULT 'active');`);
   });
 });
 
@@ -1103,6 +1107,8 @@ describe("generateMigrationSQL: SQLite's grammar declares a foreign key only ins
     influxdb: "engine-has-no-foreign-key",
     influxdb3: "engine-has-no-foreign-key",
     oxia: "engine-has-no-foreign-key",
+    // Constraints are CHECK only in Databend's grammar, and nothing declares or reports a foreign key (design 2.4).
+    databend: "engine-has-no-foreign-key",
   };
 
   for (const [dialectId, entry] of Object.entries(GRAMMAR)) {
@@ -1233,6 +1239,10 @@ const MODIFIED_COLUMN_COVERAGE: Record<
   // Not a table store either (SB2-4.3): a key holds opaque bytes, and the columns a read shows are a record's fixed
   // shape, which nothing declares.
   oxia: { label: "Oxia", reason: "has no schema, so there is no column definition to change" },
+  // Measured (probe L8), and NOT a claim that Databend cannot modify a column: `MODIFY COLUMN` changes type,
+  // nullability and comment with the data kept. The MySQL spelling this generator writes fails `NOT NULL` on an
+  // empty table (1058) and drops a default it does not restate, and the PostgreSQL spelling is a parse error (1005).
+  databend: { label: "Databend", reason: "Databend has ALTER TABLE ... MODIFY COLUMN" },
 };
 
 /**
@@ -1388,6 +1398,106 @@ describe("generateMigrationSQL: duckdb", () => {
   });
 });
 
+/**
+ * The primary key of an added table on an engine whose CREATE TABLE has no primary-key constraint (design 7.2).
+ *
+ * Trino was the first such id and was answered by a `dialect !== "trino"` test; it moved onto the
+ * `NO_PRIMARY_KEY_CONSTRAINT` record, and its output is pinned here byte for byte so the move changes nothing.
+ * Databend joined it: `PRIMARY KEY` in any position of a CREATE TABLE is 1005 (probe L11).
+ */
+describe("generateMigrationSQL: a primary key the engine cannot declare", () => {
+  const body = (sql: string): string[] => sql.split("\n").slice(1);
+
+  test("trino: an added table's output is byte-identical to the one before the record existed", () => {
+    expect(body(generateMigrationSQL(makeAddedTableDiff(), "trino"))).toEqual([
+      "-- Dialect: trino",
+      "-- Changes: 1 added, 0 removed, 0 modified",
+      "",
+      "-- Create new tables",
+      'CREATE TABLE "users" (',
+      '  "id" integer NOT NULL,',
+      '  "name" varchar(255) NOT NULL,',
+      '  "email" varchar(255)',
+      ");",
+      "-- Trino: Cannot declare a primary key. Trino SQL has no primary-key constraint.",
+      "-- Trino: Cannot generate index DDL. Indexes belong to the connector's underlying system, not Trino SQL.",
+      "",
+    ]);
+  });
+
+  test("databend: an added table carries no PRIMARY KEY line and declines the key in the record's comment", () => {
+    const sql = generateMigrationSQL(makeAddedTableDiff(), "databend");
+
+    expect(sql).not.toContain("PRIMARY KEY");
+    expect(sql).toContain(`-- Databend: Cannot declare a primary key. ${DATABEND_PRIMARY_KEY_REASON}`);
+    expect(sql.indexOf("\n);")).toBeLessThan(sql.indexOf("-- Databend: Cannot declare a primary key."));
+    expect(sql).toContain("CREATE TABLE `users` (\n  `id` integer NOT NULL,");
+  });
+
+  test("databend: the unique index over the key columns is not skipped as the key's own, because no key was written", () => {
+    const diff = makeAddedTableDiff();
+    diff.tables[0].indexes = [
+      { action: "added", indexName: "users_pkey", targetColumns: ["id"], targetUnique: true, changes: [] },
+    ];
+
+    expect(generateMigrationSQL(diff, "databend")).toContain(`-- ${DATABEND_INDEX_REFUSAL}`);
+  });
+
+  test("a table with no key column writes no primary-key comment on either id", () => {
+    const diff = makeAddedTableDiff();
+    for (const column of diff.tables[0].columns) column.targetIsPrimary = false;
+
+    for (const dialect of ["trino", "databend"] as const) {
+      expect(generateMigrationSQL(diff, dialect)).not.toContain("Cannot declare a primary key");
+    }
+  });
+});
+
+/**
+ * Databend's record rows (design 7.2): no transaction wrapper, no foreign key, no index DDL the diff can carry, and
+ * a column modification named in a comment whose reason says what L8 measured.
+ */
+describe("generateMigrationSQL: databend", () => {
+  test("the reason says Databend HAS column modification and why the generator does not write it (I7)", () => {
+    expect(DATABEND_COLUMN_MODIFICATION_REASON).toContain("MODIFY COLUMN");
+    expect(DATABEND_COLUMN_MODIFICATION_REASON).toContain("NOT NULL on an empty table");
+    expect(DATABEND_COLUMN_MODIFICATION_REASON).toContain("default");
+    expect(DATABEND_COLUMN_MODIFICATION_REASON).not.toMatch(/no column modification/i);
+
+    const sql = generateMigrationSQL(makeModifiedTableDiff(), "databend");
+    expect(sql).toContain(`-- Databend: Cannot alter column "name". ${DATABEND_COLUMN_MODIFICATION_REASON}`);
+  });
+
+  test("added and dropped columns keep the standard spelling in backticks", () => {
+    const sql = generateMigrationSQL(makeModifiedTableDiff(), "databend");
+
+    expect(sql).toContain("ALTER TABLE `users` ADD COLUMN `phone` varchar(20);");
+    expect(sql).toContain("ALTER TABLE `users` DROP COLUMN `legacy_col`;");
+  });
+
+  test("index changes are declined in words, both added and removed", () => {
+    expect(DATABEND_INDEX_REFUSAL).toStartWith("Databend: Cannot generate index DDL.");
+    for (const make of [makeAddedTableDiff, makeModifiedTableDiff]) {
+      const sql = generateMigrationSQL(make(), "databend");
+      expect(sql).toContain(`-- ${DATABEND_INDEX_REFUSAL}`);
+      expect(sql).not.toMatch(/^(CREATE (UNIQUE )?INDEX|DROP INDEX)/m);
+    }
+  });
+
+  test("foreign keys are declined in words, added and removed", () => {
+    const sql = generateMigrationSQL(makeModifiedTableDiff(), "databend");
+
+    expect(sql).toContain("-- Databend: Cannot add a foreign key. The engine has no foreign-key constraint.");
+    expect(sql).not.toMatch(/^ALTER TABLE .*(ADD|DROP) CONSTRAINT/m);
+  });
+
+  test("no BEGIN; or COMMIT; brackets the migration", () => {
+    const sql = generateMigrationSQL(makeAddedTableDiff(), "databend");
+
+    expect(sql).not.toMatch(/^(BEGIN|COMMIT)/m);
+  });
+});
+
 describe("generateMigrationSQL: dialects that cannot modify a column", () => {
   for (const [dialect, expected] of Object.entries(MODIFIED_COLUMN_COVERAGE)) {
     if (typeof expected === "string") continue;
@@ -1478,6 +1588,7 @@ const TRANSACTION_WRAPPER_COVERAGE: Record<DatabaseType, "BEGIN;" | "BEGIN TRANS
   influxdb: false, // an InfluxQL statement, not SQL text at all (`NON_SQL_DIALECTS`), and no table DDL to wrap (`NO_TABLE_DDL`)
   influxdb3: false, // SQL, but the 3.x planner takes no DDL, so there is no table DDL to wrap (`NO_TABLE_DDL`)
   oxia: false, // an `oxia client` read command, not SQL text (`NON_SQL_DIALECTS`), and no table DDL to wrap (`NO_TABLE_DDL`)
+  databend: false, // a DDL statement commits the open transaction, so BEGIN; brackets nothing, the Oracle reason (module docstring)
 };
 
 // Both creation and modification paths must use the same wrapper policy.
@@ -1704,7 +1815,7 @@ describe("generateMigrationSQL: a default is emitted as SQL, not as its value", 
       makeModifiedColumnDiff({ targetType: "VARCHAR2(20)", targetDefault: "abc", targetDefaultSql: "'abc'" }),
       "oracle",
     );
-    expect(sql).toContain(`MODIFY ("note" VARCHAR2(20) DEFAULT 'abc' NULL);`);
+    expect(sql).toContain(`MODIFY ("note" VARCHAR2(20) DEFAULT 'abc');`);
   });
 
   test("SQL Server ADD DEFAULT prefers the SQL text", () => {
@@ -1855,5 +1966,60 @@ describe("an Oracle column's declared type reaches the DDL (#1139)", () => {
     expect(sql).toContain(`ADD ("C_VARCHAR2" VARCHAR2(20 BYTE));`);
     expect(sql).toContain(`ADD ("C_RAW" RAW(16));`);
     expect(sql).toContain(`ADD ("C_NUMBER_PS" NUMBER(12,2));`);
+  });
+});
+
+describe("an Oracle MODIFY states the nullability only when it changes (#1240)", () => {
+  /**
+   * Oracle refuses a nullability the column already has. Measured on 21c XE and 26ai Free:
+   * `MODIFY ("S" VARCHAR2(50) NULL)` on a nullable `S` is ORA-01451, and `S` keeps its old type.
+   * `MODIFY ("U" UROWID)`, with no nullability clause, is accepted and changes the type.
+   */
+  const table = (columns: StoredObject["columns"]): StoredObject[] => [{ name: "T", columns, indexes: [] }];
+  const column = (type: string, nullable: boolean) => ({ name: "S", type, nullable, isPrimary: false });
+
+  test("a type change on a nullable column writes no nullability clause", () => {
+    const sql = generateMigrationSQL(
+      diffSchemas(table([column("VARCHAR2(20 BYTE)", true)]), table([column("VARCHAR2(50 BYTE)", true)])),
+      "oracle",
+    );
+    expect(sql).toContain(`ALTER TABLE "T" MODIFY ("S" VARCHAR2(50 BYTE));`);
+    // The defect: ORA-01451, and the column keeps VARCHAR2(20).
+    expect(sql).not.toContain(" NULL);");
+  });
+
+  test("a type change on a NOT NULL column writes no nullability clause", () => {
+    const sql = generateMigrationSQL(
+      diffSchemas(table([column("VARCHAR2(20 BYTE)", false)]), table([column("VARCHAR2(50 BYTE)", false)])),
+      "oracle",
+    );
+    expect(sql).toContain(`ALTER TABLE "T" MODIFY ("S" VARCHAR2(50 BYTE));`);
+  });
+
+  test("a change to NOT NULL still writes NOT NULL", () => {
+    const sql = generateMigrationSQL(
+      diffSchemas(table([column("VARCHAR2(20 BYTE)", true)]), table([column("VARCHAR2(20 BYTE)", false)])),
+      "oracle",
+    );
+    expect(sql).toContain(`ALTER TABLE "T" MODIFY ("S" VARCHAR2(20 BYTE) NOT NULL);`);
+  });
+
+  test("a change to nullable still writes NULL, with the type change beside it", () => {
+    const sql = generateMigrationSQL(
+      diffSchemas(table([column("VARCHAR2(20 BYTE)", false)]), table([column("VARCHAR2(50 BYTE)", true)])),
+      "oracle",
+    );
+    expect(sql).toContain(`ALTER TABLE "T" MODIFY ("S" VARCHAR2(50 BYTE) NULL);`);
+  });
+
+  test("a default change on a nullable column writes no nullability clause either", () => {
+    const sql = generateMigrationSQL(
+      diffSchemas(
+        table([column("VARCHAR2(20 BYTE)", true)]),
+        table([{ ...column("VARCHAR2(20 BYTE)", true), defaultValue: "abc", defaultExpression: "'abc'" }]),
+      ),
+      "oracle",
+    );
+    expect(sql).toContain(`ALTER TABLE "T" MODIFY ("S" VARCHAR2(20 BYTE) DEFAULT 'abc');`);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { positionalPlaceholder, quoteLiteral, unquoteLiteral } from "@/lib/sql/values";
+import { positionalPlaceholder, quoteLiteral, temporalLiteral, unquoteLiteral } from "@/lib/sql/values";
 import type { DatabaseType } from "@/lib/types";
 
 // A value reaching SQL generation is arbitrary text — a pasted cell, an imported
@@ -64,6 +64,20 @@ describe("quoteLiteral", () => {
     expect(quoteLiteral("a\\b", "mysql")).toBe("'a\\\\b'");
     expect(quoteLiteral("a\\b", "clickhouse")).toBe("'a\\\\b'");
     expect(quoteLiteral("a\\b", "couchbase")).toBe("'a\\\\b'");
+  });
+
+  test("escapes a backslash first and then doubles the quote on databend, whose every dialect unescapes both", () => {
+    // The four characters a\'b become the eight characters 'a\\''b': the backslash doubled, then the quote doubled.
+    const quoted = quoteLiteral("a\\'b", "databend");
+    expect(quoted).toBe("'a\\\\''b'");
+    expect(quoted.length).toBe(8);
+    // Design 5.1's reference tokenizer: every output is exactly one single-quoted token, whatever the input.
+    const oneToken = /^'(?:[^'\\]|\\[\s\S]|'')*'$/;
+    const corpus = ["", "'", "\\", "\\'", "'\\", "a\\", "\\\\'", "''", "a'b'c", "x\n\u0000y", "`", '"', "--", "/*"];
+    for (const value of corpus) {
+      expect(quoteLiteral(value, "databend")).toMatch(oneToken);
+      expect(unquoteLiteral(quoteLiteral(value, "databend"), "databend")).toBe(value);
+    }
   });
 
   test("leaves a backslash alone where it is data", () => {
@@ -207,6 +221,8 @@ describe("positionalPlaceholder", () => {
     // Nor InfluxDB 3: the engine has placeholders, but the route body is exactly `db`, `q` and
     // `format`, so the provider refuses bound params and a placeholder would go unfilled.
     expect(positionalPlaceholder("influxdb3", 1)).toBeNull();
+    // Nor Databend: the provider refuses bound params and writes every value through `quoteLiteral` (design 5.1).
+    expect(positionalPlaceholder("databend", 1)).toBeNull();
   });
 });
 
@@ -284,11 +300,48 @@ describe("unquoteLiteral", () => {
   // third, half-right copy of the escape rules from being written somewhere else.
   test("round-trips every value quoteLiteral can produce, on every dialect", () => {
     const values = ["", "abc", "it's", "a''b", "a\\b", "a\\", "'", "\\", "a\nb", "a\tb", "a\u0000b", "O'Brien\\"];
-    const dialects: DatabaseType[] = ["postgres", "mysql", "mssql", "couchbase", "duckdb", "clickhouse", "trino"];
+    const dialects: DatabaseType[] = [
+      "postgres",
+      "mysql",
+      "mssql",
+      "couchbase",
+      "duckdb",
+      "clickhouse",
+      "trino",
+      "databend",
+    ];
     for (const dialect of dialects) {
       for (const value of values) {
         expect(unquoteLiteral(quoteLiteral(value, dialect), dialect)).toBe(value);
       }
     }
+  });
+});
+
+// Oracle reads a quoted string in a date position through the session's NLS_DATE_FORMAT,
+// `DD-MON-RR` by default, so the ISO text the generators write is refused with ORA-01861
+// (#1400). The literal names its own mask instead, the way the SQL export does.
+describe("temporalLiteral", () => {
+  test("writes an Oracle date through TO_DATE with the mask of the text's own form", () => {
+    expect(temporalLiteral("2026-01-27", "date", "oracle")).toBe("TO_DATE('2026-01-27', 'YYYY-MM-DD')");
+  });
+
+  test("writes an Oracle timestamp through TO_TIMESTAMP", () => {
+    expect(temporalLiteral("2026-01-27 14:30:00", "timestamp", "oracle")).toBe(
+      "TO_TIMESTAMP('2026-01-27 14:30:00', 'YYYY-MM-DD HH24:MI:SS')",
+    );
+  });
+
+  test("quotes text the mask would not read, rather than writing a literal that fails", () => {
+    expect(temporalLiteral("yesterday", "date", "oracle")).toBe("'yesterday'");
+    expect(temporalLiteral("2026-01-27", "timestamp", "oracle")).toBe("'2026-01-27'");
+    expect(temporalLiteral("2026-01-27T14:30:00Z", "timestamp", "oracle")).toBe("'2026-01-27T14:30:00Z'");
+  });
+
+  test("every other dialect, and no dialect, keeps the quoted text it had", () => {
+    expect(temporalLiteral("2026-01-27", "date", "postgres")).toBe("'2026-01-27'");
+    expect(temporalLiteral("2026-01-27 14:30:00", "timestamp", "mysql")).toBe("'2026-01-27 14:30:00'");
+    expect(temporalLiteral("2026-01-27", "date", "mssql")).toBe("N'2026-01-27'");
+    expect(temporalLiteral("2026-01-27", "date", undefined)).toBe("'2026-01-27'");
   });
 });

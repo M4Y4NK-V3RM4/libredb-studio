@@ -11,15 +11,20 @@
  * tests, and lets the window be clamped so the row holding focus is always mounted, which the
  * roving tabindex depends on. Either way the ARIA numbers come from `flattenTree` and never from
  * the window.
+ *
+ * The filter box above the rows (U25) narrows them to the objects whose name matches, over what
+ * the tree has already read. Typing reads nothing; what the filter cannot see is counted on its
+ * status line and read only on a press. The rule for an unread subtree is in `filter.ts`.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { CircleAlert, Database, LoaderCircle } from "lucide-react";
+import { useCallback, useDeferredValue, useEffect, useRef, useState } from "react";
+import { CircleAlert, Database, LoaderCircle, SearchX } from "lucide-react";
 import type { DatabaseObject, ProviderCapabilities, ProviderLabels } from "@/lib/db/types";
 import type { DatabaseConnection } from "@/lib/types";
 import type { TreeRowModel } from "./flatten";
 import { RowMenu, type RowMenuAnchor } from "./RowMenu";
 import { rowActions, type TreeRowAction, type TreeRowActionHandlers } from "./row-actions";
+import { TreeFilter } from "./TreeFilter";
 import { TREE_ROW_HEIGHT, TreeRow } from "./TreeRow";
 import { useTreeNodes, type ObjectSource } from "./use-tree-nodes";
 
@@ -49,6 +54,12 @@ export interface ObjectTreeProps {
    * that one reader's press releases both this tree and the flat schema read.
    */
   readonly deferred?: boolean;
+  /**
+   * Why the tree is deferred, when it is not the connection's own `skipObjectScan`: the page opened a connection
+   * whose every request can resume billed compute by itself, and nothing is read until the person uses it
+   * (`useConnectionManager`, CL-CORE-2). Only the sentence changes; `deferred` is what holds the reads.
+   */
+  readonly deferredForBilledCompute?: boolean;
   /** What the load action calls. Absent means no action is offered. */
   readonly onLoad?: () => void;
   readonly onObjectClick?: (object: DatabaseObject) => void;
@@ -87,6 +98,10 @@ export interface ObjectTreeProps {
    */
   readonly refreshToken?: number;
 }
+
+/** What the deferred panel says under a connection held for billed compute; `docs/providers/databend.md` 4.4 quotes it. */
+export const BILLED_COMPUTE_HOLD =
+  "Studio opened this connection without reading it, because any request to it can resume compute that is billed while it runs. The editor is ready to use.";
 
 /** An open menu: which row it belongs to, and where the reader asked for it. */
 interface OpenMenu {
@@ -134,6 +149,7 @@ export function ObjectTree({
   connection,
   capabilities,
   deferred,
+  deferredForBilledCompute,
   onLoad,
   onObjectClick,
   actions,
@@ -143,11 +159,22 @@ export function ObjectTree({
   refreshToken = 0,
 }: ObjectTreeProps) {
   const columnsReadable = source === undefined || readsColumns === true;
-  const tree = useTreeNodes(connection, capabilities, deferred, source, columnsReadable);
+  // Held per connection, so a switch starts unfiltered without an effect to reset it (D7).
+  const [filter, setFilter] = useState<{ readonly connectionId: string; readonly text: string }>({
+    connectionId: connection.id,
+    text: "",
+  });
+  const query = filter.connectionId === connection.id ? filter.text : "";
+  const setQuery = useCallback((text: string) => setFilter({ connectionId: connection.id, text }), [connection.id]);
+  // The walk over ten thousand read objects runs on the deferred value, so the box never waits on it.
+  const filterQuery = useDeferredValue(query);
+  const tree = useTreeNodes(connection, capabilities, deferred, source, columnsReadable, filterQuery);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [menu, setMenu] = useState<OpenMenu | null>(null);
   const [pinned, setPinned] = useState(false);
-  const [scrollTop, setScrollTop] = useState(0);
+  // Keyed by the query, so a new query starts at the top without an effect to reset it.
+  const [scroll, setScroll] = useState<{ readonly query: string; readonly top: number }>({ query: "", top: 0 });
+  const scrollTop = scroll.query === filterQuery ? scroll.top : 0;
   const [viewportHeight, setViewportHeight] = useState(0);
   // A fresh object per request rather than an id, so asking twice for the same row focuses it
   // twice: Right on an open row and Left on its child both land on a row that is already active.
@@ -207,6 +234,11 @@ export function ObjectTree({
 
   const moveTo = useCallback((index: number) => focusRow(rows[clamp(index, 0, rows.length - 1)].id), [focusRow, rows]);
 
+  /** ArrowDown from the filter box: into the tree, on its first row. */
+  const enterTree = useCallback(() => {
+    if (rows.length > 0) focusRow(rows[0].id);
+  }, [focusRow, rows]);
+
   /**
    * What this row may be asked to do, from the DECLARATION. Built per row rather than
    * cached, because the answer depends on the cached object and on which handlers the
@@ -216,8 +248,15 @@ export function ObjectTree({
     (row: TreeRowModel): readonly TreeRowAction[] =>
       actions === undefined
         ? []
-        : rowActions({ row, object: tree.objectFor(row), capabilities, labels, handlers: actions }),
-    [actions, capabilities, labels, tree],
+        : rowActions({
+            row,
+            object: tree.objectFor(row),
+            capabilities,
+            labels,
+            handlers: actions,
+            readOnly: connection.readOnly === true,
+          }),
+    [actions, capabilities, connection.readOnly, labels, tree],
   );
 
   /**
@@ -423,17 +462,33 @@ export function ObjectTree({
     [activeRowId, focusRow],
   );
 
-  const onScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
-    setScrollTop(event.currentTarget.scrollTop);
-    setViewportHeight(event.currentTarget.clientHeight);
-    // The window follows the scroll again: the row holding focus is allowed to leave it.
-    setPinned(false);
-  }, []);
+  const onScroll = useCallback(
+    (event: React.UIEvent<HTMLDivElement>) => {
+      setScroll({ query: filterQuery, top: event.currentTarget.scrollTop });
+      setViewportHeight(event.currentTarget.clientHeight);
+      // The window follows the scroll again: the row holding focus is allowed to leave it.
+      setPinned(false);
+    },
+    [filterQuery],
+  );
 
-  const attach = useCallback((element: HTMLDivElement | null) => {
-    treeRef.current = element;
-    if (element !== null) setViewportHeight(element.clientHeight);
-  }, []);
+  /**
+   * A NEW scroll box, which `key={filterQuery}` makes on every query, starts at the top. So the
+   * stored offset is taken from the box rather than kept: clearing a query returns to the query
+   * `""`, whose offset from before the first keystroke is still on record, and the window would
+   * draw rows thousands of pixels below what the fresh box shows, a blank pane. A row pinned deep
+   * in the old list is released for the same reason.
+   */
+  const attach = useCallback(
+    (element: HTMLDivElement | null) => {
+      treeRef.current = element;
+      if (element === null) return;
+      setViewportHeight(element.clientHeight);
+      setScroll({ query: filterQuery, top: element.scrollTop });
+      setPinned(false);
+    },
+    [filterQuery],
+  );
 
   /*
     The escape hatch (#765). Checked before every other state, because the states below
@@ -447,7 +502,9 @@ export function ObjectTree({
       <TreePanel testId="tree-deferred" icon={<Database strokeWidth={1.5} className="w-6 h-6 text-brand" />}>
         <h3 className="text-foreground text-xs font-medium mb-1">{connection.name}</h3>
         <p className="text-xs text-muted-foreground leading-relaxed">
-          This connection opens without reading its catalog. The editor is ready to use.
+          {deferredForBilledCompute === true
+            ? BILLED_COMPUTE_HOLD
+            : "This connection opens without reading its catalog. The editor is ready to use."}
         </p>
         {onLoad !== undefined && (
           <button
@@ -490,7 +547,9 @@ export function ObjectTree({
     );
   }
 
-  if (rows.length === 0) {
+  // An empty FILTERED view is not an empty catalog: it falls through to the render below, which
+  // keeps the box and its status line above the no-match panel.
+  if (rows.length === 0 && tree.search === undefined) {
     return (
       <TreePanel testId="tree-empty" icon={<CircleAlert strokeWidth={1.5} className="w-6 h-6 text-muted-foreground" />}>
         <h3 className="text-foreground text-xs font-medium mb-1">Nothing to show</h3>
@@ -519,38 +578,56 @@ export function ObjectTree({
 
   return (
     <>
-      <div
-        ref={attach}
-        role="tree"
-        aria-label="Database objects"
-        data-testid="object-tree"
-        tabIndex={activeMounted ? -1 : 0}
-        onFocus={onContainerFocus}
-        onKeyDown={onKeyDown}
-        onClick={onClick}
-        onContextMenu={onContextMenu}
-        onScroll={onScroll}
-        className="relative h-full overflow-auto outline-none"
-      >
-        {/* Presentational, so the rows below stay owned by the tree in the accessibility tree. */}
-        <div role="presentation" className="relative" style={{ height: rows.length * TREE_ROW_HEIGHT }}>
-          {rows.slice(start, end).map((row, offset) => (
-            <TreeRow
-              key={row.id}
-              row={row}
-              object={tree.objectFor(row)}
-              active={row.id === activeRowId}
-              selected={row.id === activeId}
-              busy={tree.isBusy(row)}
-              failure={tree.failureFor(row)}
-              hasActions={hasRowMenu(row)}
-              menuOpen={menu?.rowId === row.id}
-              onOpenMenu={openMenuOnTrigger}
-              onToggle={toggleRow}
-              top={(start + offset) * TREE_ROW_HEIGHT}
-            />
-          ))}
-        </div>
+      <div className="flex h-full flex-col">
+        <TreeFilter query={query} onQueryChange={setQuery} search={tree.search} onEnterTree={enterTree} />
+        {rows.length === 0 ? (
+          <TreePanel
+            testId="tree-no-match"
+            icon={<SearchX strokeWidth={1.5} className="w-6 h-6 text-muted-foreground" />}
+          >
+            <h3 className="text-foreground text-xs font-medium mb-1 break-words">
+              No loaded object matches &quot;{filterQuery.trim()}&quot;
+            </h3>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Only folders that have been read are searched.
+            </p>
+          </TreePanel>
+        ) : (
+          <div
+            key={filterQuery}
+            ref={attach}
+            role="tree"
+            aria-label="Database objects"
+            data-testid="object-tree"
+            tabIndex={activeMounted ? -1 : 0}
+            onFocus={onContainerFocus}
+            onKeyDown={onKeyDown}
+            onClick={onClick}
+            onContextMenu={onContextMenu}
+            onScroll={onScroll}
+            className="relative min-h-0 flex-1 overflow-auto outline-none"
+          >
+            {/* Presentational, so the rows below stay owned by the tree in the accessibility tree. */}
+            <div role="presentation" className="relative" style={{ height: rows.length * TREE_ROW_HEIGHT }}>
+              {rows.slice(start, end).map((row, offset) => (
+                <TreeRow
+                  key={row.id}
+                  row={row}
+                  object={tree.objectFor(row)}
+                  active={row.id === activeRowId}
+                  selected={row.id === activeId}
+                  busy={tree.isBusy(row)}
+                  failure={tree.failureFor(row)}
+                  hasActions={hasRowMenu(row)}
+                  menuOpen={menu?.rowId === row.id}
+                  onOpenMenu={openMenuOnTrigger}
+                  onToggle={toggleRow}
+                  top={(start + offset) * TREE_ROW_HEIGHT}
+                />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
       {/* Outside the tree element: a menu is not a valid child of one, and a sibling's keys
           never bubble to the tree's own handler. */}

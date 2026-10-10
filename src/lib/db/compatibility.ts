@@ -99,6 +99,8 @@ const SHIPPED: Readonly<Record<DatabaseType, true>> = Object.freeze({
   influxdb3: true,
   // Oxia (#424): its own provider, doc and integration test, read over its gRPC client API (DECISIONS O2).
   oxia: true,
+  // Databend: its own provider, doc and integration test, read and written over its HTTP query API.
+  databend: true,
   libredb: true,
 });
 
@@ -165,6 +167,8 @@ const EXTERNAL: Readonly<Record<DatabaseType, boolean>> = Object.freeze({
   influxdb3: true,
   // A server or cluster the user already runs, reached over Oxia's gRPC client API.
   oxia: true,
+  // A self-hosted server or a Databend Cloud warehouse, reached over its HTTP query API.
+  databend: true,
   // The one false entry. SQLite is a file rather than a server and is still
   // external: it is the user's file, opened from a path they give us. libredb is
   // ours, created by this app, so it is the only id that answers no here.
@@ -247,6 +251,8 @@ export const READ_ONLY_ENFORCED: Record<DatabaseType, boolean> = Object.freeze({
   // and `Health/Check` (O8), and the parser refuses every write verb by name, naming the read-only mode while it
   // holds (O1).
   oxia: true,
+  // No read-only mode: the provider sends the statement the editor holds, as Db2's does.
+  databend: false,
   libredb: false,
 });
 
@@ -297,6 +303,7 @@ export const READS_FILE_ACCESS_POSTURE: Readonly<Record<DatabaseType, boolean>> 
   influxdb: false,
   influxdb3: false,
   oxia: false,
+  databend: false,
   libredb: false,
 });
 
@@ -350,6 +357,7 @@ export const MCP_EXPOSABLE: Readonly<Record<DatabaseType, boolean>> = Object.fre
   // Outside this version, as etcd's: Oxia key paths name Pulsar tenants, namespaces and topics (SEC-05), so no MCP
   // surface lists them until one is designed (BACKLOG B100).
   oxia: false,
+  databend: true,
   libredb: true,
 });
 
@@ -391,6 +399,7 @@ export const CONNECTION_FORM_URI_MODE: Readonly<Record<DatabaseType, boolean>> =
   influxdb: false,
   influxdb3: false,
   oxia: false,
+  databend: false,
   libredb: false,
 });
 
@@ -438,6 +447,7 @@ export const CONNECTION_STRING_ACCEPTED: Readonly<Record<DatabaseType, boolean>>
   influxdb: false,
   influxdb3: false,
   oxia: false,
+  databend: false,
   libredb: false,
 });
 
@@ -473,10 +483,12 @@ export interface WireCompatibleEngine {
  * AlloyDB Omni from a fourth run the same day, OceanBase Community Edition
  * and SingleStore from a fifth run the same day, ScyllaDB from a sixth run on
  * 2026-08-21/22, Apache Doris, Garnet and both Percona distributions from a seventh run
- * on 2026-08-26, ParadeDB, OrioleDB and Databend from an eighth on 2026-08-27, and
+ * on 2026-08-26, ParadeDB and OrioleDB from an eighth on 2026-08-27, and
  * VictoriaMetrics, the first relative of the `prometheus` driver, from a ninth on 2026-09-23, and
  * Redpanda, the first relative of the `kafka` driver, from a tenth on 2026-09-25.
- * The nine MySQL-wire relatives were re-measured together on 2026-09-06 for issues
+ * Databend, probed in the eighth run, is no longer a relative: it ships as the `databend`
+ * type-id over its own HTTP query API, and one product is never counted twice.
+ * The nine MySQL-wire relatives of the day, Databend among them, were re-measured together on 2026-09-06 for issues
  * #573 and #574, at the wire and then in a browser against the built app, and the
  * outcome per engine is recorded in `docs/providers/mysql.md` section 5.5 for the
  * EXPLAIN grammar and section 8 for the SHOW STATUS reads.
@@ -518,6 +530,8 @@ export const WIRE_COMPATIBLE_ENGINES: readonly WireCompatibleEngine[] = [
       "Performance metrics, slow queries and active sessions do work: the pg_stat_* views CockroachDB provides are enough for them.",
       'The Explain panel works, and shows what the query really did. CockroachDB refuses PostgreSQL\'s parenthesised options (`at or near "analyze": syntax error`, and `JSON` is legal there only beside DISTSQL, where it answers a processor diagram rather than a plan), so the grammar is measured at connect and this server gets its own unparenthesised EXPLAIN ANALYZE. Until it was measured the panel showed its "no execution plan" empty state, so a failed plan request read as a query with no plan.',
       "Maintenance offers Analyze on one table and nothing else. CockroachDB has no VACUUM, no REINDEX and no whole-database ANALYZE (each a 42601 syntax error), so the provider asks the server at connect which of PostgreSQL's six maintenance statements its grammar has and draws no control for the rest; measured on v26.3.2 on 2026-10-04 (#1387). Until then all three were offered and each click answered HTTP 500 with the parser's error.",
+      "Monitoring > Tables and Storage, and the Admin > Operations table list, are EMPTY rather than erroring. The size builtins take pg_stat_user_tables.relid now instead of a concatenated name, which CockroachDB refused with `pg_size_pretty(): unknown signature: pg_table_size(string)` and which failed the whole read (#1436). Empty is then the engine's own answer and not that call's: measured on v26.3.2 on 2026-10-04, pg_stat_user_tables and pg_stat_all_tables both carry zero rows while pg_class holds the user's tables, so there is no row for a size to hang on. pg_table_size() does exist and answers NULL for a table it has.",
+      "The Source tab shows a function's or procedure's definition with no Edit control. An edit is applied between two DO blocks that check the routine was not changed meanwhile, and CockroachDB runs an empty DO block but refuses PERFORM inside one (0A000, `unimplemented: this syntax`) and has no pg_proc.xmin (42703), so the provider asks the server at connect whether it runs that guard and offers no edit where it does not; measured on v26.3.2 on 2026-10-08 (#1437). Until then Edit was offered and every apply was refused after the reader had typed it.",
     ],
   },
   {
@@ -542,7 +556,8 @@ export const WIRE_COMPATIBLE_ENGINES: readonly WireCompatibleEngine[] = [
     caveats: [
       'The object browser lists tables and materialized views. It was unavailable until the listing learned to drop pg_class.reltuples, which RisingWave has no column for. The earlier reading of this blamed the schema query\'s LEFT JOIN pg_class ON (...)::regclass, which measurement refuted: that join binds, and RisingWave simply reports an unbindable column as "missing FROM-clause entry for table c", so a column defect reads as a join defect.',
       "Row counts and sizes are blank rather than zero: neither pg_class.reltuples nor pg_total_relation_size() exists to answer, and an unmeasured number is shown as absent rather than as 0.",
-      "The monitoring dashboard now loads with every statistic marked unavailable rather than erroring the whole page: RisingWave has no pg statistics catalog at all. Slow-query and active-session panels stay empty (not merely unavailable) because RisingWave also rejects a parameterised LIMIT.",
+      "The monitoring dashboard loads rather than erroring the whole page, with most statistics marked unavailable. Slow-query and active-session panels stay empty (not merely unavailable) because RisingWave also rejects a parameterised LIMIT. This caveat used to say RisingWave has no pg statistics catalog at all, which measurement refuted: pg_stat_user_tables exists and carries a row per table, relid included, while pg_stat_all_tables does not exist, so the absence is per view and not wholesale.",
+      "Monitoring > Tables lists the user's tables with their real table and index sizes, where the whole read used to fail. RisingWave binds neither pg_size_pretty() nor pg_total_relation_size(), but answers pg_table_size(relid) and pg_indexes_size(relid), so the byte counts are formatted in-process and only the total is left unmeasured. Measured on 3.1.0 on 2026-10-04 (#1436): a seeded table reads 44 B of table and 0 B of indexes with the total shown as N/A, where before the panel carried `Failed to bind expression: pg_size_pretty(pg_table_size(quote_ident(schemaname) ...))`.",
       "Expanding a table, a view or a materialized view shows its columns, with their types and in the table's own order, through describeObject() and describeObjects() alike, measured 2026-09-24 (#1075). This caveat used to call the gap the engine's, and it was ours: RisingWave has no json type and refused the json_agg(), json_build_object() and '[]'::json the reads were built with, while it answers every jsonb form, which is what the reads use now. It also refuses a subquery inside an aggregate call, which is how an index's column list was built; that is a LATERAL join now.",
       "Nullability and defaults are read from the engine's catalog, which states neither: pg_attribute answers attnotnull false for every column, so a NOT NULL column and a primary key both read nullable, and pg_attrdef is empty, so no column shows a default, one declared with DEFAULT included. The nullability half is filed as D119.",
       "Foreign keys are empty because RisingWave has none: CREATE TABLE refuses REFERENCES in both its column and its table form. The primary key is listed as an index named after its table, and an index lists every column pg_index.indkey names, which on RisingWave is the key columns followed by every column the index carries, the primary key always among them: an index on (amount, customer_id) of a four-column table reads as amount, customer_id, order_id, note.",
@@ -697,6 +712,7 @@ export const WIRE_COMPATIBLE_ENGINES: readonly WireCompatibleEngine[] = [
       "No index information at all: StarRocks exposes no secondary-index catalog, so the object browser and the index panel show none.",
       "A parameter cannot sit in the LIMIT position under the binary prepared protocol, and this engine says so in as many words: measured 2026-09-22 through mysql2, LIMIT ? answers 'using parameter(?) as limit or offset not supported' while the identical statement with the number written in succeeds. Same constraint as Doris, which it is a fork of, and it cost the object browser the same 500 on every folder read until the bulk read wrote its bound in. Verified through the provider afterwards against a seeded database: describeObjects() reads 2 objects with 3 columns on the first, and a bound of 1 reads 1 object and reports its own truncation.",
       "The Explain panel renders StarRocks's own text plan: StarRocks does not parse EXPLAIN FORMAT='json', so the provider sends a plain EXPLAIN, which answered a 13-node tree for a constant SELECT (browser, 2026-09-06).",
+      "Inline row edit saves. StarRocks prepares SELECT ? but refuses to prepare an UPDATE, INSERT or DELETE with errno 1295 (This command is not supported in the prepared statement protocol yet), and nothing has run when it does, so such a statement is sent once more as text with its values written in; before that every Apply failed. Measured on 4.1.6 and 3.3.22 on 2026-10-09 (#1403).",
     ],
   },
   {
@@ -719,21 +735,6 @@ export const WIRE_COMPATIBLE_ENGINES: readonly WireCompatibleEngine[] = [
       "A parameter cannot sit in the LIMIT position under the binary prepared protocol: measured 2026-09-22 through mysql2, the identical statement answers with a literal LIMIT and fails with LIMIT ? on 'mismatched input LIMIT expecting {<EOF>, ;}', while the text protocol takes either. It cost the object browser a 500 on every folder read until the bulk read wrote its bound into the statement instead of binding it. Stock MySQL 8 binds it happily, so this is the relative's constraint and the same one StarRocks states outright.",
       "Row counts and sizes are correct but late: a table read 0 rows and 0 B immediately after a 2000-row insert and the true 2000 rows / 10187 bytes about a minute later, with an ANALYZE in between changing nothing. The lag is self-correcting, so a freshly loaded table looks empty for a while.",
       "A UNIQUE KEY table declares no primary key to the product: information_schema reports COLUMN_KEY as UNI rather than PRI, so the object browser marks no column primary.",
-    ],
-  },
-  {
-    name: "Databend",
-    via: "mysql",
-    tier: "partial",
-    probedVersion: "Databend v1.2.925-patch-11 (advertises MySQL 8.0.90)",
-    caveats: [
-      "The object browser, column metadata, table and storage statistics and inline edit work since 2026-10-04 (browser, on v1.2.925-patch-11, patch-13 and 1.2.881). Databend implements no prepared statement and answers every one with Prepare is not support in Databend, so the provider measures that at connect and binds a parameterised read's values into the statement text there instead.",
-      "Databend has no SHOW STATUS statement at all, no information_schema.processlist and no performance_schema, so the overview, health, session and slow-query panels have no source, and Establish Connection asks for a second click to save the connection.",
-      "The Stored Procedures, Functions, Triggers and Events folders show Databend's own UnknownTable error: it has no information_schema.ROUTINES, TRIGGERS or EVENTS view. Tables and Views count and list normally.",
-      "No index and no foreign key is ever reported: information_schema.statistics and key_column_usage are empty, and the index statistics read is a parse error there (GROUP_CONCAT with ORDER BY is not in its grammar).",
-      "BEGIN, COMMIT and ROLLBACK work and a ROLLBACK discards the rows, but Databend reports no transaction state in the MySQL status flags, so the editor says it cannot verify the transaction and SANDBOX is refused (measured 2026-10-04).",
-      "Strings must be single-quoted: Databend follows the SQL standard and reads a double-quoted value as an identifier, so a double-quoted literal is an unknown-column error.",
-      "EXPLAIN FORMAT='json' does not parse, so the provider sends a plain EXPLAIN there instead (browser, 2026-09-06), and neither Optimize nor Check exists. Analyze runs and reports completion with no report, because Databend answers it with an OK packet rather than MySQL's report rows.",
     ],
   },
   {

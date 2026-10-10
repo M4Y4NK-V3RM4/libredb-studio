@@ -487,6 +487,11 @@ afterwards proves the session can carry one. A probe that fails closes the sessi
 already opened, before the failure is mapped, so a retried connection attempt leaves no pool, no
 sockets and no reconnection timers behind — the same lifecycle as the Druid and Couchbase providers.
 
+Two more reads follow the identity read, and neither can fail the connection: the virtual-keyspace
+catalog the monitoring reads key their degradation on, and `SELECT key FROM system.versions`, which
+says whether the server is ScyllaDB and so which keyspaces the tree hides (see "A system keyspace is
+excluded by exact NAME, never by a prefix", #1428).
+
 ---
 
 ## 5. Query interface
@@ -880,6 +885,21 @@ provider carries an exact list: Cassandra 5.0's own five system keyspaces plus t
 creates `system_reports` precisely so the prefix spelling stays refuted rather than merely
 unattractive, and the test asserts that the container listing **shows** it.
 
+ScyllaDB owns three more, all listed as user keyspaces on 2026.2.4 and 2026.3.2 before #1428:
+`audit` (the audit log keyspace, `audit.audit_log`), `system_replicated_keys` (scylladb#27954) and
+`system_distributed_everywhere`. They are hidden **only on ScyllaDB**, because on Cassandra they are a
+person's: measured 2026-10-09 on cassandra:5.0.9, `CREATE KEYSPACE` accepts all three names. The
+provider tells the two apart at connect time with `SELECT key FROM system.versions`, ScyllaDB's own
+table: scylladb/scylla:2026.2.4 answers one row and cassandra:5.0.9 answers 8704 "table versions does
+not exist". `release_version` cannot do it, because ScyllaDB answers a Cassandra-compatible `3.0.8`
+there. A refused read of any kind hides none of the three.
+
+A table whose name **ends in `$paxos`** is ScyllaDB's lightweight-transaction shadow
+(scylladb#28183). Measured on 2026.3.2, `e2e_t` was listed beside `e2e_t$paxos`, and opening the
+shadow composed `SELECT * FROM shop.e2e_t$paxos`, which the parser rejects. The listing and the
+count both drop that suffix, and only on the `table` kind: a name that merely contains `$paxos`
+without ending in it stays listed, and so does a user table of any other name.
+
 The exclusion is applied in TypeScript rather than in the statement, because `keyspace_name` is the
 partition key and CQL has no `NOT IN` over one: filtering server-side would need `ALLOW FILTERING` on
 a catalog read.
@@ -1178,6 +1198,10 @@ session: compaction, cleanup, garbage collection, flush and repair are all `node
 JMX, and statistics are recomputed as a side effect of compaction. There is no `KILL` to map `kill`
 onto, because the protocol has no cancellation at all
 ([§3.7](#37-there-is-no-cancellation-so-none-is-offered)).
+
+So no Terminate button renders on the running queries the Sessions panel lists. Both session lists
+drew one on every row until #1424, and confirming answered `400 Maintenance operations not supported
+for this database`; they now draw it only where `kill` is declared.
 
 `TRUNCATE` is the tempting one and is deliberately not wired: it is a data-loss operation, it is not
 one of the nine `MaintenanceOperation` values, and a user who wants it can type it.
@@ -1707,7 +1731,7 @@ The gate is the **server**, not the protocol and not the driver.
 | | Measured |
 |---|---|
 | Apache Cassandra 5.0.9 | Answers `DESCRIBE` for all six kinds |
-| ScyllaDB 2026.2.4 (`release_version` 3.0.8) | Answers `DESCRIBE` with the **same four columns**, the same `type` values and the same absence sentence (`Table 'no_such_table' not found in keyspace 'probe'`), verified on `table`, `index` and `type` |
+| ScyllaDB 2026.2.4 (`release_version` 3.0.8) | Answers `DESCRIBE` with the **same four columns** and the same absence sentence (`Table 'no_such_table' not found in keyspace 'probe'`), verified on `table`, `index` and `type`; for a materialized view, including the view behind a secondary index, the reply's `type` is **`view`**, not Cassandra's `materialized_view`, measured on both 2026.2.4 and 2026.3.2 |
 | `cassandra-driver` 4.9.0 | Negotiates native protocol **v4** against 5.0.9 (`isSupportedCassandra` caps at `0x04`), and `DESCRIBE` works over it. Note that `system.local.native_protocol_version` reports `5`, which is the server's maximum and not the negotiated version |
 
 The driver needs no feature support at all: it sends `DESCRIBE` as an ordinary one-shot query with

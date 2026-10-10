@@ -235,10 +235,20 @@ not "anything that is not a view", so a `FOREIGN` or `SYSTEM VIEW` row still sta
 `information_schema.tables` under that type and whose users work with them rather than with base
 tables: listing only `BASE TABLE` hid the engine's central object while showing its plain tables.
 
-It is a measured no-op everywhere else. PostgreSQL leaves materialized views out of
-`information_schema.tables` altogether — its `table_type` is only `BASE TABLE`, `VIEW`, `FOREIGN` or
-`LOCAL TEMPORARY` — and TimescaleDB, YugabyteDB, Cloudberry, AlloyDB Omni and CockroachDB were each
-asked on a live instance and emit no such row (CockroachDB's third value is `SYSTEM VIEW`).
+**The Overview's table count does not follow the listing here (#1439).** The object tree lists
+materialized views in a folder of their own — a kind it resolves from `pg_class.relkind = 'm'`, not
+from `information_schema` — so `OVERVIEW_COUNTS_SQL` counts `table_type = 'BASE TABLE'` alone.
+Counting `MATERIALIZED VIEW` there made Overview's "Tables" tile read 5 for a schema with 3 tables
+and 2 materialized views on RisingWave 3.1.0 and Materialize v26.44.1, where the tree's Tables
+folder said 3. Two facts wear the word "table": what the tree groups under Tables, and what the
+listing's positive list admits so Materialize's central object is browsable at all. The count is the
+first.
+
+Including `MATERIALIZED VIEW` in the listing is a measured no-op everywhere else. PostgreSQL leaves
+materialized views out of `information_schema.tables` altogether — its `table_type` is only
+`BASE TABLE`, `VIEW`, `FOREIGN` or `LOCAL TEMPORARY` — and TimescaleDB, YugabyteDB, Cloudberry,
+AlloyDB Omni and CockroachDB were each asked on a live instance and emit no such row (CockroachDB's
+third value is `SYSTEM VIEW`), so the Overview's count is unchanged on every one of them.
 
 ### 3.1.2 Two kinds of absence, and why neither is an empty array
 
@@ -248,6 +258,37 @@ contract ([types.ts](../../src/lib/db/types.ts)) is explicit that these are diff
 a rejected read leaves its panel absent and records the engine's own sentence under
 `errors`, while an empty array claims the engine answered "nothing" — a measurement it
 never made, and one that throws away the sentence saying why.
+
+A refused **size builtin** is not one of those cases, and since #1436 does not reject.
+`pg_table_size()`, `pg_indexes_size()` and `pg_total_relation_size()` are three columns of a
+read whose other columns the engine answers, so each is dropped on its own
+(`queryTableStats()`) and the rows arrive with that size absent — never as a `0`, which
+would be a measurement nobody made ([D105](../BACKLOG.md)). Measured on RisingWave 3.1.0,
+which binds neither `pg_size_pretty()` nor `pg_total_relation_size()` but answers
+`pg_table_size(relid)` and `pg_indexes_size(relid)`: the panel now lists the tables with
+their sizes, where the whole read used to fail.
+
+**The total is the one size that can be derived rather than dropped**, and
+`totalSizeBytes()` does. PostgreSQL defines `pg_total_relation_size()` as `pg_table_size()`
+plus `pg_indexes_size()`, so adding the two measured parts is the engine's own arithmetic and
+not this provider's guess. It has to be derived rather than left absent because
+`totalSizeBytes` is a **required** field: an absent total still has to carry a number, and the
+`N/A`-beside-`0` spelling the other providers use is only safe where nothing else on the row
+claims a size. The Tables tab's Size card and the Storage tab's share both gate on
+`tableSizeBytes` alone — until #1436 a measured table size always arrived with a measured
+total — so a row carrying one part and the placeholder got that `0` summed and drawn as a
+reading. Measured on RisingWave 3.1.0 on 2026-10-08, one table of two rows:
+`pg_table_size` 89, `pg_indexes_size` 0, `pg_total_relation_size` *function
+pg_total_relation_size(integer) does not exist*. The card read **0 B** over a table with
+bytes in it; it now reads **89 B**. Where a part is refused as well there is nothing to add
+up, and the row publishes no sizes at all, so those gates read the absence and answer `N/A`
+instead of summing the placeholder. No engine measured here does that — RisingWave refuses
+the total alone, CockroachDB answers NULL for all three — so that arm closes the shape rather
+than one seen.
+
+Materialize's outcome is unchanged, because its refusal is not the size call alone: it has
+no `pg_stat_user_tables` either, so the statement still has nothing to read FROM and the
+panel still carries that sentence.
 
 The distinction a reader needs is then drawn where the sentence is rendered.
 `describesAbsentObject()` ([monitoring-absence.ts](../../src/lib/monitoring-absence.ts))
@@ -289,10 +330,11 @@ directions because the two readers use different catalogs:
 - **`OVERVIEW_COUNTS_SQL`** counted `pg_tables` directly, which has no `table_type` column to
   filter on. On CockroachDB that answered 98 for the same 2 tables — 93 `crdb_internal`, 3
   `pg_extension` — so the Monitoring overview and the Explorer badge disagreed inside one app.
-  It now counts `information_schema.tables` through the same `USER_TABLE_TYPES` list the browser
-  uses, because the two disagreed a second time once materialized views joined the browser
-  (4 against 3 on Materialize). One definition of "a table", or they drift apart on the next
-  engine. The index count still reads `pg_indexes`, which has no equivalent second reader.
+  It now counts `information_schema.tables` through the same `schemaExclusion()` clause the rest
+  of the file uses, so an engine-internal schema is left out of the count exactly as it is left
+  out of the object tree. The count takes `table_type = 'BASE TABLE'` alone (#1439) — a
+  materialized view is its own folder in the tree — and the index count still reads `pg_indexes`,
+  which has no equivalent second reader.
 
 Every CTE in the schema queries carries the filter, not just some: `pk_info` and `fk_info` were
 missing it while `tables_info`, `columns_info` and `index_info` had it, which let the deleted
@@ -309,22 +351,61 @@ engines, PostgreSQL included, where it correctly returns nothing; the driver ser
 engines nobody here has run, so an engine without `pg_depend` or `pg_extension` drops the
 clause through `withoutExtensionOwnershipTest()` and keeps the fixed list.
 
+The object browser asks the same question one level down, per object (#1429). An extension
+can put its routines and relations into a user's own schema, where no schema filter reaches
+them: `CREATE EXTENSION pgcrypto` and `hstore` add 97 functions to `public`, and
+`pg_stat_statements` adds three functions and two views. `extensionMemberExclusion()` drops every routine
+(`pg_proc`) and relation (`pg_class`) with a `pg_depend` row of `deptype = 'e'` from the
+folder counts, the listings and `describeObjects()`, which is the same relation test the
+agent's catalog read carries, so the two agree. A user's own object never has such a row.
+Measured 2026-10-08 with user objects seeded next to the extensions:
+
+| Engine | Catalog in `public` | Object browser |
+|---|---|---|
+| PostgreSQL 18.6, pgcrypto + hstore + pg_stat_statements | 102 functions, 3 views | 2 functions, 1 view |
+| TimescaleDB on PG 18.6 | 90 functions, 13 procedures | 2 functions, 0 procedures |
+| OrioleDB beta 19 on PG 18.6 | 80 functions, 5 views | 2 functions, 1 view |
+| Percona PostgreSQL 18.6.1, pg_stat_monitor | 15 functions, 2 views | 2 functions, 1 view |
+| AlloyDB Omni 17.9, as the image ships | 150 functions, 50 views | 2 functions, 1 view |
+| YugabyteDB 2026.1.2 (PG 15.12), pgcrypto + hstore | 98 functions | 1 function |
+| CockroachDB 26.3.2 | 1 function, 1 view, 1 table | the same; `pg_depend` answers nothing |
+| Materialize 26.45.1 | 1 view, 1 table | the same; `pg_depend` answers nothing |
+| RisingWave 3.1.0 | 1 view, 1 table | the same; `pg_depend` answers nothing |
+
+All nine accept the clause. The listings and counts retry without it on an engine that
+refuses `pg_depend` or `pg_extension`, through `queryListing()` and `queryCounts()`, and
+`describeObjects()` already runs through the fallback chain that drops it.
+
+Three places read other catalogs and needed the same test on their own (#1599). The
+Overview's table and index counts read `information_schema.tables` and `pg_indexes`, which
+name a table instead of carrying its oid, so `extensionMemberTableExclusion()` asks by
+schema and name; an index is left out by asking about the table it sits on. The Triggers
+folder's count, listing and source read leave out a trigger whose table an extension created,
+since that table is already hidden. Measured 2026-10-08 on the `postgis/postgis:17-3.5`
+image as it ships (PostgreSQL 17.5, PostGIS 3.5.2, with topology and the tiger geocoder),
+plus `orders` with one trigger and a second trigger added to `spatial_ref_sys`: the Overview
+went from 38 tables and 76 indexes to 1 and 1, and the Triggers folder from 2 triggers to
+one. CockroachDB 26.3.2 answers the new statements with the same counts as before.
+
 The fixed list stays for schemas the *engine itself* builds in, which are not
 extension-owned: measured, CockroachDB's `crdb_internal` and Cloudberry's `pg_ext_aux`
 return nothing from `pg_depend`.
 
 Citations, by engine: Materialize's
 [system catalog](https://materialize.com/docs/sql/system-catalog/) (`mz_catalog`, `mz_internal`,
-`mz_introspection`); CockroachDB's
+`mz_introspection`). `mz_unsafe` and `mz_catalog_unstable` are not on that page; Materialize
+v26.44.1 listed both beside a user's own schemas, so they are excluded on that measurement.
+RisingWave's [`rw_catalog`](https://docs.risingwave.com/sql/system-catalogs/rw-catalog) holds its
+system tables; RisingWave 3.1.0 listed 74 of them as user objects. CockroachDB's
 [system catalogs](https://www.cockroachlabs.com/docs/stable/system-catalogs), which enumerates
 exactly four (`crdb_internal` and `pg_extension` are the two stock PostgreSQL lacks); TimescaleDB's
 own `sql/pre_install/schemas.sql`, which creates all seven; Cloudberry's
 [schema documentation](https://cloudberry.apache.org/docs/operate-with-data/operate-with-db-objects/create-and-manage-schemas/)
-for `gp_toolkit`, `pg_aoseg` and `pg_bitmapindex`. Two entries rest on measurement rather than a
-document, and are marked as such in the code: Cloudberry's `pg_ext_aux` (the PAX auxiliary tables),
-which its schema page does not list, and AlloyDB's `google_ml`, which Google's docs never name —
-traced through `pg_depend` to the `google_ml_integration` extension the Omni image enables by
-default.
+for `gp_toolkit`, `pg_aoseg` and `pg_bitmapindex`. Entries that rest on measurement rather than a
+document are marked as such in the code: Cloudberry's `pg_ext_aux` (the PAX auxiliary tables),
+which its schema page does not list; Materialize's `mz_unsafe` and `mz_catalog_unstable`; and
+AlloyDB's `google_ml`, which Google's docs never name — traced through `pg_depend` to the
+`google_ml_integration` extension the Omni image enables by default.
 
 ### 3.1.4 What the object surface declares, and which catalog answers for it
 
@@ -350,7 +431,7 @@ Five of the seven also declare `hasSource` and a `sourceLanguage`, which is what
 against one database and nothing in the product can switch it on a live connection, so the level
 would draw a folder with exactly one child forever.
 
-**No `index` kind**, deliberately, and this is the line the fifteen other providers are read
+**No `index` kind**, deliberately, and this is the line the other providers are read
 against. PostgreSQL's own catalog models an index as a property of the relation it is on:
 `pg_index` is keyed by `indrelid` and an index cannot exist apart from one. So it stays where it
 already is, in `describeObject()`'s output beside that object's columns, rather than becoming a
@@ -738,7 +819,10 @@ A PL/pgSQL body inside a `$function$` dollar-quoted string is highlighted as Pos
 
 ### 3.1.6 Object edit (#789)
 
-Two kinds accept an edited definition back, `function` and `procedure`, and both declare `acceptsSourceEdits: true`.
+Two kinds accept an edited definition back, `function` and `procedure`, and both declare `acceptsSourceEdits: true` on a server that runs the apply's guard.
+That is measured at connect (#1437), because the guard's two `DO` blocks need `PERFORM` and `pg_proc.xmin` and not every server on this type id has them: `probeRoutineGuard` sends `DO $probe$BEGIN PERFORM p.xmin FROM pg_catalog.pg_proc p WHERE false; END$probe$`, reads success or failure only, and is skipped under the read-only profile like the EXPLAIN probe.
+Measured 2026-10-08: PostgreSQL 18.6 answers `DO`; CockroachDB v26.3.2 runs an empty `DO $$ BEGIN END $$` but answers `0A000 at or near ";": syntax error: unimplemented: this syntax` for the probe and `42703 column "p.xmin" does not exist` for the column, so there neither kind declares the field, the Source read carries no `edit`, and a build is refused before anything is sent.
+Before this, CockroachDB was offered Edit and every apply answered that same `0A000` refusal.
 Everything below was measured on PostgreSQL 18.4 (Debian 18.4-1.pgdg13+1) through `pg`, against a container brought up on `docker/postgres-init/`.
 
 **The three kinds that are REFUSED, each with the engine fact behind it, and one that is deferred.**
@@ -987,6 +1071,7 @@ Closing that means either a seventh outcome arm or a narrowed sentence in `src/l
 **The limit every claim on this page carries (D62).**
 Every PostgreSQL row above is a claim about 18.4.
 This type id also serves CockroachDB and Materialize, and neither was probed for any of it.
+The one exception is whether the guard runs at all, which every server is now asked at connect (#1437, at the top of this section); CockroachDB v26.3.2 answers no, so none of these rows is reached there.
 That is why the classifier answers `definition` with THE ENGINE'S OWN SENTENCE for a code it does not recognise, rather than guessing at a class, and why a server answering no md5 gets an `unsupported` refusal rather than an unguarded write.
 
 **Reproducing all of it.**
@@ -1701,11 +1786,11 @@ base) fans these out in parallel.
 | Method | Primary source | Notes |
 |--------|----------------|-------|
 | `getHealth()` | `pg_stat_activity`, `pg_database_size`, `pg_statio_user_tables`, `pg_stat_statements` | connections, size, cache-hit % (`N/A` when unmeasurable — [§7.1](#71-when-the-cache-hit-ratio-is-not-measurable)), top-5 slow queries (single placeholder row if the extension is absent), 10 sessions |
-| `getOverview()` | `version()`, `pg_postmaster_start_time()`, `pg_settings`, `pg_database_size`, `pg_tables`/`pg_indexes` | version, uptime, conns, max_conns, size, table/index counts |
+| `getOverview()` | `version()`, `pg_postmaster_start_time()`, `pg_settings`, `pg_database_size`, `information_schema.tables`/`pg_indexes` | version, uptime, conns, max_conns, size, table/index counts |
 | `getPerformanceMetrics()` | `pg_statio_user_tables`, `pg_stat_database`, `pg_stat_checkpointer` (17+) or `pg_stat_bgwriter` | cache-hit % (omitted when unmeasurable), deadlocks, checkpoint write time (`N/A` when unreadable); **no buffer-pool %** — see [§7.1](#71-when-the-cache-hit-ratio-is-not-measurable) |
 | `getSlowQueries()` | `pg_stat_statements` → fallback `pg_stat_activity` | detailed per-statement stats; fallback shows live active queries |
 | `getActiveSessions()` | `pg_stat_activity` | pid, user, state, query, wait events, duration; excludes own backend |
-| `getTableStats()` | `pg_stat_user_tables` + size functions | live/dead tuples, sizes, last (auto)vacuum/analyze, bloat ratio |
+| `getTableStats()` | `pg_stat_user_tables` + `pg_table_size`/`pg_indexes_size`/`pg_total_relation_size`, each on `relid` | live/dead tuples, sizes (absent per function the engine refuses, [§3.1.2](#312-two-kinds-of-absence-and-why-neither-is-an-empty-array)), last (auto)vacuum/analyze, bloat ratio |
 | `getIndexStats()` | `pg_stat_user_indexes`, `pg_index`, `pg_am` | type, columns, unique/primary, size, scan count, usage ratio |
 | `getStorageStats()` | `pg_tablespace`, WAL functions | per-tablespace size; WAL size (superuser-gated, swallowed if denied) |
 | `getPgStatActivity()` | `pg_stat_activity` | raw passthrough for advanced views |
@@ -1732,6 +1817,14 @@ zero and is still published as `0`/`"0 B"`, which is the shared helper's contrac
 state this engine produces: `pg_database_size()` is a function, not an aggregate, and measured on
 PostgreSQL 18 a freshly created database answers 7774735 bytes, never `NULL` and never zero. MySQL's
 `SUM()` over an empty schema is where that null row is real.
+
+**The table sizes are read the same way (#1436).** `getTableStats()` selects the three byte figures
+only and spells each with `formatBytes()`, so it selects no `pg_size_pretty()` column either — the
+shape `getOverview()` above and the object surface already use. That makes one spelling of a byte
+count across the provider instead of two, and it is visible: a 16384-byte table reads `16 KB` where
+`pg_size_pretty()` wrote `16 kB`. The bytes are unchanged, and it removes a builtin RisingWave does
+not bind. Each size is absent, never `0`, where its builtin is refused or answers `NULL` — which is
+what CockroachDB v26.3.2 does for a table it has.
 
 ### 7.1 When the cache hit ratio is not measurable
 
@@ -1824,6 +1917,43 @@ anyway (`END` is the COMMIT synonym, `PREPARE TRANSACTION` detaches it from the 
 SANDBOX refuses them before sending, together with the `COMMIT`, `ROLLBACK` and `ABORT` it
 refuses on every engine ([`sandbox-refusal.ts`](../../src/lib/editor/sandbox-refusal.ts)). A
 `PREPARE name AS ...` statement is not matched: the sequence is two words.
+
+### 8.0.1 A write the next read cannot see, and the session setting that shows it (#1399)
+
+RisingWave makes a DML statement's effect visible to later batch reads only after a `FLUSH`, or at once in a session whose `rw_implicit_flush` is on.
+So an inline edit ran its `UPDATE`, re-ran the result's query at once, and drew the old row under a toast that said "The results are up to date".
+
+Measured on RisingWave 3.1.0 (`risingwavelabs/risingwave:latest`, single_node) on 2026-10-09:
+
+| What was run | Read back |
+|---|---|
+| `UPDATE` then `SELECT` in one default session | the old row |
+| the same pair after `SET rw_implicit_flush = true` | the new row |
+| `SHOW rw_implicit_flush` in a new session afterwards | `false`: the setting is the session's own |
+| a write under the setting, read by a second session without it | the new row |
+| a write without the setting, read by a second session | the old row |
+
+`connect()` therefore asks whether the server has the setting and has it off, and where it does, every session the pool opens is turned on: the one connect borrowed directly, and each later one from the pool's `connect` event, where `pg` runs the statement before the session is handed to whoever asked for it.
+A write made in such a session is visible to every session once it returns, so the grid's refresh reads it whichever pooled session it runs on.
+
+Two statements ask, because no single one is answered without an error by both ends of the family:
+
+| Statement | RisingWave 3.1.0 | PostgreSQL 18.6 |
+|---|---|---|
+| `SELECT current_setting('rw_implicit_flush', true)` | refused, *Failed to bind expression* | one row, NULL |
+| `SHOW rw_implicit_flush` | one row, `false` | refused, `42704` *unrecognized configuration parameter* |
+| the setting in `pg_settings` | no row | no row |
+
+The quiet form goes first.
+PostgreSQL answers it with NULL and is asked nothing more, so its server log gains no `unrecognized configuration parameter` line at every connect, which asking with `SHOW` first would write; measured on 18.6, the connect adds no line that names the setting.
+Only a server that refuses the quiet form is asked with `SHOW`, and one that refuses both has no such setting.
+The probe reads the answer and never a message and names no engine, as the EXPLAIN probe does ([10.1](#101-the-explain-grammar-is-measured-at-connect-597)).
+
+Measured through the provider against the same server, three writes each followed at once by a read of the same row: the read answered the previous value all three times before this change and the new value all three times after it.
+
+A server that already has the setting on is left alone.
+The read-only profile ([12](#12-agent-read-only-execution-profile-328)) asks nothing: it writes nothing, and a probe at connect would be a statement outside its `BEGIN READ ONLY` envelope.
+A session that refuses the `SET` is reported on the server console and stays in the pool, where its writes behave as they did before.
 
 ### 8.1 `endOpenQueryTransaction()` — a transaction left open on a pooled client
 
@@ -2096,8 +2226,8 @@ already fits.
 was hardcoded to *"Run Reindex"* / *"Rebuild Indexes"* / *"Reconstructs all indexes in the database."*
 for every engine (#464). That wording was written for this engine — the global card
 sends no target, so `runMaintenance('reindex')` here runs `REINDEX DATABASE`
-([§9](#9-maintenance)) — so declaring it changes nothing on PostgreSQL and lets the two
-other providers that offer `reindex` (SQLite, Couchbase) say what theirs does instead:
+([§9](#9-maintenance)) — so declaring it changes nothing on PostgreSQL and lets the
+other providers that offer `reindex`, such as SQLite, libSQL and Couchbase, say what theirs does instead:
 
 | Field | Value |
 | --- | --- |

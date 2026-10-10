@@ -27,12 +27,12 @@
 
 ## Overview
 
-LibreDB Studio provides a RESTful API for database management operations. The API supports PostgreSQL, MySQL, SQLite, libSQL, DuckDB, Oracle, Db2 LUW, SQL Server, MongoDB, Couchbase, ClickHouse, Apache Druid, Elasticsearch, OpenSearch, Trino, Apache Cassandra, Redis, Prometheus, InfluxDB (InfluxQL), InfluxDB 3 (SQL), Apache Kafka, etcd, Neo4j, Milvus, Qdrant and Oxia.
+LibreDB Studio provides a RESTful API for database management operations. The API supports PostgreSQL, MySQL, SQLite, libSQL, DuckDB, Oracle, Db2 LUW, SQL Server, MongoDB, Couchbase, ClickHouse, Apache Druid, Elasticsearch, OpenSearch, Trino, Apache Cassandra, Redis, Prometheus, InfluxDB (InfluxQL), InfluxDB 3 (SQL), Apache Kafka, etcd, Neo4j, Milvus, Qdrant, Oxia and Databend.
 
 ### Key Features
 
 - **JWT Authentication** - Secure token-based authentication stored in HTTP-only cookies
-- **Multi-Database Support** - Twenty-six engines: PostgreSQL, MySQL, SQLite, libSQL, DuckDB, Oracle, Db2 LUW, SQL Server, MongoDB, Couchbase, ClickHouse, Apache Druid, Elasticsearch, OpenSearch, Trino, Apache Cassandra, Redis, Prometheus, InfluxDB (InfluxQL), InfluxDB 3 (SQL), Apache Kafka, etcd, Neo4j, Milvus, Qdrant, Oxia
+- **Multi-Database Support** - Twenty-seven engines: PostgreSQL, MySQL, SQLite, libSQL, DuckDB, Oracle, Db2 LUW, SQL Server, MongoDB, Couchbase, ClickHouse, Apache Druid, Elasticsearch, OpenSearch, Trino, Apache Cassandra, Redis, Prometheus, InfluxDB (InfluxQL), InfluxDB 3 (SQL), Apache Kafka, etcd, Neo4j, Milvus, Qdrant, Oxia, Databend
 - **AI-Powered Insights** - EXPLAIN explanations, query-safety analysis and schema docs, streamed
 - **Real-time Health Monitoring** - Database metrics and performance insights
 
@@ -811,6 +811,39 @@ carries a plain statement. Four things differ from the other SQL providers:
 
 ---
 
+##### Databend Query Format
+
+Databend speaks SQL over its own HTTP query API (`POST /v1/query`, port `8000` by default), so the `sql` field carries a plain statement.
+Four things differ from the other SQL providers:
+
+- **`database` is the default database** of every statement, and a statement may still name any other database in full.
+  `warehouse` names the compute every statement runs on, sent as the `X-DATABEND-WAREHOUSE` header; Databend Cloud requires one and resumes a suspended warehouse on the first statement, billing while it runs.
+- **A password needs TLS.** It travels in a Basic `Authorization` header on every request, so a connection with a password and no SSL mode to a host that is not this machine, and not reached through an SSH tunnel, is refused before any socket unless it sets `allowInsecureAuth`.
+- **No positional parameters.** A request carrying `params` is refused with "Databend's HTTP API takes no bound parameters from Studio; write the value in the statement."
+- **Each statement runs in its own session.** A transaction or a temporary table a statement leaves open ends with it: Studio rolls the transaction back and the response carries a `warning` saying so.
+
+```json
+{
+  "connection": {
+    "type": "databend",
+    "host": "localhost",
+    "port": 8000,
+    "user": "libredb",
+    "database": "libredb_demo"
+  },
+  "sql": "SELECT number, number * 2 AS doubled FROM numbers(3)"
+}
+```
+
+**Notes:**
+- `columnTypes` are Databend's declared type strings verbatim, such as `UInt64` or `Nullable(String)`; an integer past 2^53 and every decimal, date and timestamp value arrive as the server's text.
+- A duplicate output name is disambiguated rather than dropped: `fields` carries `id` and `id (2)`.
+- `POST /api/db/maintenance` accepts `kill` only, and its target is a session id from the Sessions panel (`system.processes.id`), not a query id, which `KILL QUERY` refuses with 1053; the answer's `message` names the session whose current statement Databend was asked to stop.
+- `POST /api/db/cancel` works: cancelling a running statement sends the server a kill for it.
+- Full reference: [`docs/providers/databend.md`](providers/databend.md).
+
+---
+
 ##### Apache Cassandra Query Format
 
 Cassandra speaks CQL over the native protocol (port `9042`), so the `sql` field carries a plain CQL
@@ -991,6 +1024,23 @@ Milvus's provider implements `engineUser()`: the Milvus user name, the user name
   "success": true,
   "executionTime": 1234,
   "message": "VACUUM completed successfully"
+}
+```
+
+A response can also carry `rows` (an array of objects) and `fields` (their column order), when the operation's answer is a table to read rather than only a sentence.
+Redis `analyze` is the only operation that fills them today: it runs `INFO` and returns one row per `key:value` metric, with the columns `section`, `key` and `value`, and the count in `message` is the number of rows.
+`fields` is present whenever `rows` is, and both are absent on every other operation.
+
+```json
+{
+  "success": true,
+  "executionTime": 3,
+  "message": "Server info retrieved (2 metrics)",
+  "rows": [
+    { "section": "Server", "key": "redis_version", "value": "7.2.4" },
+    { "section": "Clients", "key": "connected_clients", "value": "1" }
+  ],
+  "fields": ["section", "key", "value"]
 }
 ```
 
@@ -1365,6 +1415,11 @@ The declaration also states the walk's shape, in four optional fields that each 
 A `totalScope` of `"none"` is an engine that publishes no count and pins no revision: `total` is not read, and a provider answers 0.
 etcd declares `"/"`, `"opaque"`, `"prefix"` and `"walk"`: a cursor only it can read, a literal prefix instead of a glob, and a total that counts the keys the walk covers.
 Oxia declares `"/"`, `"opaque"`, `"prefix"` and `"none"`: a cursor only it can read, a literal prefix, and no count.
+An engine whose server groups keys into folder prefixes may also declare `levels`: its walk can list one level of the key space at a time under `separator`.
+A `levels` declaration needs `pattern: "prefix"` and `totalScope: "none"`, and any other pair is a defect of the declaration, answered `500` on every request.
+Its `separator` is one UTF-16 code unit long, such as `/`: an empty one is found in every key, and a longer one can overlap itself or be cut by a pattern that ends inside it, so the panel could draw an entry below the level the route judged it in.
+The route does not check the separator's length; every provider in this repository is held to it by a test of its declaration.
+`levels.rootKind`, when present, names the object kind whose rows name the key space's first segment; the row menu offers Browse Keys on those rows and opens the panel on `<name><separator>`, on an engine with no container level.
 
 **Authentication:** Required.
 No admin gate, for the same reason the object routes have none: the role decides which connection may
@@ -1388,6 +1443,7 @@ be OPENED and nothing about what may be read through it.
 | `pattern` | string | No | The walk's pattern, in the shape the declaration names. Absent means every key, which is NOT the same as an empty string, which is refused: `MATCH ""` is a pattern no key satisfies. Under `"glob"` (Redis) it is a `MATCH` pattern, trimmed and then forwarded, and a caller scoping a walk has two things to know. `MATCH` is applied per batch server-side and is **not indexed**, so a scoped walk costs the server a full pass over the keyspace rather than a lookup. And it is a glob with **no escape**, so a key segment that contains `*`, `?` or `[` matches more than the prefix asked about: the answer must be filtered by the caller, compared segment by segment (`app:envelope` is not under `app:env`). Under `"prefix"` (etcd) it is the literal prefix every walked key begins with, forwarded exactly as sent, with nothing trimmed and nothing escaped, because a prefix is bytes and a space at either end is part of the range it names |
 | `count` | number | No | The batch size. Absent takes the provider's declared `defaultCount`. A value above the declared `maxCount` is **refused rather than clamped**, because a silent clamp answers a request for 10,000 with 1,000 and says nothing |
 | `database` | number | No | Which numbered database to walk, taken only from an engine that declares a container level to name (Redis). Absent means the one the session is in, since `SELECT` state lives on the connection and not in this route. A caller offering the choice reads the engine's own list from `POST /api/db/objects/containers`, the same container level the object tree's top level comes from, rather than assuming a count: the same server answers 16 outside cluster mode and 1 inside it. An engine that walks one key space and declares no level (etcd, Oxia) refuses the field |
+| `level` | `true` | No | List one level: the keys directly under `pattern` and the folder prefixes one `separator` deeper. Sent only to an engine that declares `levels`, and refused for any other engine. Any value other than `true` is refused; absent is the key walk every engine answers, and a request without it forwards exactly the fields above |
 
 **Response (200 OK):**
 
@@ -1404,10 +1460,11 @@ be OPENED and nothing about what may be read through it.
 |-------|-------------|
 | `keys` | The batch. Under `"glob"` (Redis) it is **not deduplicated and not ordered**: `SCAN` promises neither, so a key present for the whole walk may be returned twice while the table rehashes, and the order is the hash table's rather than the caller's. Under `"prefix"` (etcd) the pages of one walk read an ordered key range at one pinned revision, so they are one consistent view. Oxia also declares `"prefix"` and pins no revision: each page reads the namespace in its own key order, resumed after the last key the previous page answered |
 | `cursor` | The cursor for the next page. `"0"` means the walk reached the end, and it is the only end-of-walk signal the engine publishes |
-| `types` | Each key's value type, **by key name**. It travels with the page rather than being asked for separately: `TYPE` takes one key and Redis publishes no batch form, so the provider pipelines one call per key and the cost is ONE extra round trip per page whatever the page holds. A key **absent** from the map is one whose type could not be read and a caller should draw nothing for it; a key that vanished between the walk and this read is present with the server's own `"none"`. What it describes is the moment it was read, like everything else in a sampled walk |
+| `types` | Each key's value type, **by key name**. It travels with the page rather than being asked for separately: `TYPE` takes one key and Redis publishes no batch form, so the provider pipelines one call per key and the cost is ONE extra round trip per page whatever the page holds. A key **absent** from the map is one whose type could not be read and a caller should draw nothing for it; a key that vanished between the walk and this read is present with the server's own `"none"`. What it describes is the moment it was read, like everything else in a sampled walk. An engine that declares a key-browser kind opens a key's Source tab rather than a typed read, so the value here is not read as a type; such an engine may carry a short descriptor of the key instead, which the panel draws in the same cell |
 | `total` | What a progress indicator divides by, in the scope the declaration's `totalScope` names. Under `"database"` (Redis) it is `DBSIZE` for the database walked: the engine's own key count, and the only denominator a progress indicator can divide by, since a cursor says nothing about how much is left. On a clustered deployment it is the LOCAL node's count: `SCAN` walks one node's slots and `DBSIZE` has no cluster-wide form. Under `"walk"` (etcd) it is the exact count of the keys the walk covers, the pattern's prefix range or the whole key space, at the revision the walk's pages are pinned to; for a user whose grants are narrower, it counts the keys of the ranges that user may read. Under `"none"` the engine publishes no count and pins no revision: the field is not read, and a provider answers 0. |
 | `clustered` | Present and `true` only when the server's own `INFO cluster` reply says this deployment is clustered. `SCAN` and `DBSIZE` are per node and neither has a cluster-wide form, so on a cluster `keys` and `total` describe the node that answered and nothing else. **Absent** means the deployment does not say it is clustered, which is the ordinary server; a reply the provider could not read is absent rather than a guess. The fact is read in the same round trip as `total` |
 | `skipped` | Present only when the page left keys out: `{ "count", "reason" }`, how many keys this page read and could not name, and why. On etcd a key that is not UTF-8 text is counted here rather than listed, because a name decoded with replacement characters would address a different key. Redis never sends it |
+| `prefixes` | Present only on an answer to `level`: the folder prefixes of this level, each the full prefix ending in `separator`, each one `separator` deeper than `pattern`, none twice. They count with `keys` against `count`. A folder is complete for its level, so a reader lists it by asking for its own level and never infers it from keys |
 
 The cursor belongs to the CALLER.
 Nothing is retained between two pages, so a page costs a round trip rather than a session, and a cursor arriving after a reconnect is still valid: it is a position, not a handle, spelled as the declaration's `cursor` says.
@@ -1415,6 +1472,18 @@ Under `"decimal"` (Redis) it is a position in a hash table.
 Under `"opaque"` (etcd) it is a string only the provider that wrote it can read, and the engine can overtake it between two pages: etcd's cursor carries the revision its walk is pinned to, and once a compaction passes that revision the next page answers etcd's compacted error in place of keys.
 etcd's cursor also carries a digest of the key ranges its walk may read, so a page whose ranges differ, because the provider read the user's grants again since the first page or the `pattern` changed, is refused before etcd is asked, with the instruction to start the walk again.
 The caller then starts the walk again at `"0"`.
+
+A level page answers one level of the key space.
+Its `keys` are the keys directly under `pattern`, with no `separator` after it; a key equal to a non-empty `pattern`, an object store's folder marker, is one of them, and no key is empty.
+Its `prefixes` are the folder prefixes one `separator` deeper.
+A provider that declares `levels` meets four rules:
+
+- A level page never holds more than `count` entries, keys and prefixes together, whatever the server returns in one response.
+- No prefix and no key appears twice on one page.
+- A provider whose server answers a level unpaged removes repeated entries, sorts the full answer by UTF-8 byte order, returns the first `count` entries after the cursor, and spells its cursor as the last entry returned, so a list that changes order between calls neither skips nor repeats an entry.
+- A level cursor is valid in every process that serves the connection: a provider may bind it to the request's scope but not to its own instance.
+
+The route checks every level page and answers `500` for a prefix or a key outside the level, a prefix twice, or more entries than `count`; the ordering and cursor rules are the provider's to meet.
 
 **Statuses:**
 
@@ -1431,6 +1500,15 @@ The caller then starts the walk again at `"0"`.
 | `database` is negative or not an integer | `400` | `{ "error": "\"database\" must be a non-negative integer" }` |
 | `database` is present and the engine declares no container level | `400` | `{ "error": "<type> walks one key space and declares no database level: \"database\" names the numbered database to walk, and this engine has none to name" }` |
 | The engine declares `keyScan` and implements no walk | `500` | `{ "error": "<type> declares keyScan but implements no scanKeysPage" }` |
+| `level` is present and not `true` | `400` | `{ "error": "\"level\" must be true, or absent for a walk of keys only" }` |
+| `level` is `true` and the engine declares no `levels` | `400` | `{ "error": "<type> declares no folder listing: its walk pages keys only, so \"level\" has nothing to ask for" }` |
+| The engine declares `levels` on a walk whose `pattern` is not `"prefix"` or whose `totalScope` is not `"none"`, on any request | `500` | `{ "error": "<type> declares levels on a walk that is not an uncounted prefix walk: levels need pattern \"prefix\" and totalScope \"none\"" }` |
+| A key walk's answer carries `prefixes` | `500` | `{ "error": "<type> answered folder prefixes to a walk that asked for keys only" }` |
+| A level answer carries a prefix outside the level | `500` | `{ "error": "<type> answered a folder outside the level it was asked for: \"<prefix>\"" }` |
+| A level answer carries one prefix twice | `500` | `{ "error": "<type> answered the folder \"<prefix>\" twice on one level page" }` |
+| A level answer carries a key outside the level | `500` | `{ "error": "<type> answered a key outside the level it was asked for: \"<key>\"" }` |
+| A level answer carries one key twice | `500` | `{ "error": "<type> answered the key \"<key>\" twice on one level page" }` |
+| A level answer carries more entries than `count` | `500` | `{ "error": "<type> answered <n> entries to a level page of at most <count>" }` |
 | Rate limited | `429` | `{ "error": "...", "code": "RATE_LIMITED" }` |
 
 A failed page does not advance the caller's cursor. The position already held is the last one the
@@ -1980,6 +2058,9 @@ Events of type `agent_operation` come from the agent execution path (#328) and a
 
 Body `{ "connections": [...] }`; returns per-connection health `{ "results": [{ connectionId, status, latencyMs, ... }] }`. `400` if `connections` is missing. `401` with no session, `403` with a session that is not an admin — see the note above.
 Each connection is resolved the way the db routes resolve one: a managed seed by its `seedId`, a copy that claims a `seed:` id by the operator's record (so a seed that no longer exists is an `error` row), and an inline connection as sent, or as an `error` row while `ALLOW_CUSTOM_CONNECTIONS` is off.
+`status` is `healthy`, `degraded` (the check took over 5 s), `error`, or `not-checked`.
+A `not-checked` row is a connection whose provider declares `resumesBilledCompute`: the route reads that from an unconnected provider and answers with `latencyMs: 0`, caching no provider and sending no statement, since a check would resume compute the engine bills for (a suspended Databend Cloud warehouse).
+The admin Overview shows it as not checked and keeps it out of the health score and the average latency.
 
 #### GET, POST /api/admin/accounts
 
@@ -2036,7 +2117,7 @@ The object is one shape on the wire. Fields the server reads from a request body
 change how a connection is opened — are the coordinates and credentials (`id`, `name`, `type`,
 `host`, `port`, `user`, `password`, `database`, `schema`, `connectionString`), plus `ssl`,
 `sshTunnel`, `serviceName` (Oracle), `instanceName` (MSSQL), `localDataCenter` (Cassandra),
-`authSource` (MongoDB), `saslMechanism` (Kafka), `allowInsecureAuth` (Db2, InfluxDB, InfluxDB 3, Oxia), `dataServers` (Oxia), `queryTimeout`, `agentUser`, `agentPassword`, `apiKeyId`/`apiKeySecret`
+`authSource` (MongoDB), `saslMechanism` (Kafka), `allowInsecureAuth` (Db2, InfluxDB, InfluxDB 3, Oxia, Databend), `dataServers` (Oxia), `warehouse` (Databend), `queryTimeout`, `agentUser`, `agentPassword`, `apiKeyId`/`apiKeySecret`
 (Elasticsearch, #708), and `readOnly` (#1089). `color`, `environment`, `group`,
 `managed`, `seedId`, and `createdAt` are client-side bookkeeping that travel in the same object.
 
@@ -2064,9 +2145,10 @@ interface DatabaseConnection {
   localDataCenter?: string; // Cassandra only, and REQUIRED there: the driver refuses to connect without it (`datacenter1` on a stock single node)
   authSource?: string; // MongoDB only: the database the credentials live in (`?authSource=admin`). Not the database being opened - without it the driver checks the user against that one, which fails as a credentials error
   saslMechanism?: 'PLAIN' | 'SCRAM-SHA-256' | 'SCRAM-SHA-512'; // Kafka only: the SASL mechanism that checks user and password, absent meaning none. A user or password with no mechanism is refused, and every mechanism requires TLS
-  allowInsecureAuth?: boolean; // Db2, both InfluxDB types and Oxia (#786): connect with no TLS although the password (Db2), the password or token (InfluxDB) or the token (Oxia) then crosses the network in cleartext; without it the Db2 provider refuses a connection that has no TLS, both InfluxDB providers one that sends its secret with no TLS to a host that is not loopback, and the Oxia provider one that sends a token with no TLS to a host that is not this machine (docs/providers/oxia.md section 4.6)
+  allowInsecureAuth?: boolean; // Db2, both InfluxDB types, Oxia and Databend (#786): connect with no TLS although the password (Db2, Databend), the password or token (InfluxDB) or the token (Oxia) then crosses the network in cleartext; without it the Db2 provider refuses a connection that has no TLS, both InfluxDB providers one that sends its secret with no TLS to a host that is not loopback, the Oxia provider one that sends a token with no TLS to a host that is not this machine (docs/providers/oxia.md section 4.6), and the Databend provider one that sends its password with no TLS to a host that is not loopback
   dataServers?: string; // Oxia only: a cluster's data-server addresses, host:port entries separated by commas or whitespace, at most 64; see docs/providers/oxia.md section 4.4
-  skipObjectScan?: boolean; // read no catalog when this connection opens: zero reads on connect, so the editor is usable immediately and the object tree offers a load action instead of scanning (#765, an Oracle owner with 43,512 tables froze the browser on connect)
+  warehouse?: string;   // Databend only: the warehouse every statement runs on, sent as the X-DATABEND-WAREHOUSE header; Databend Cloud requires one (the warehouse= value of its DSN) and resumes a suspended one on the first statement, billing while it runs. Not a secret
+  skipObjectScan?: boolean; // read no catalog when this connection opens: zero reads on connect, so the editor is usable immediately and the object tree offers a load action instead of scanning (#765, an Oracle owner with 43,512 tables froze the browser on connect). It defers the CATALOG, not the walk: a connection that also declares `keyScan` keeps the sidebar's Objects / Keys switch, and the switch reads nothing, because the key panel mounts only when Keys is chosen and then takes the same bounded sample (#1169)
   readOnly?: boolean;      // refuse writes, value edits and maintenance before any request (#1089). Accepted only where the engine's provider enforces it: true anywhere else is refused at seed load and before any provider is built, and a value that is not a boolean is refused everywhere
   managed?: boolean;       // true = admin-controlled: not editable in the UI, secrets kept on the server
   seedId?: string;         // stable reference to seed config ID
@@ -2076,7 +2158,7 @@ interface DatabaseConnection {
   apiKeySecret?: string;   // the pair's secret half; either alone (after trim) falls back to user/password rather than sending a key built from an empty half
 }
 
-type DatabaseType = 'postgres' | 'mysql' | 'sqlite' | 'libsql' | 'duckdb' | 'mongodb' | 'redis' | 'oracle' | 'db2' | 'mssql' | 'libredb' | 'couchbase' | 'clickhouse' | 'druid' | 'elasticsearch' | 'opensearch' | 'trino' | 'cassandra' | 'prometheus' | 'kafka' | 'etcd' | 'neo4j' | 'milvus' | 'qdrant' | 'influxdb' | 'influxdb3' | 'oxia';
+type DatabaseType = 'postgres' | 'mysql' | 'sqlite' | 'libsql' | 'duckdb' | 'mongodb' | 'redis' | 'oracle' | 'db2' | 'mssql' | 'libredb' | 'couchbase' | 'clickhouse' | 'druid' | 'elasticsearch' | 'opensearch' | 'trino' | 'cassandra' | 'prometheus' | 'kafka' | 'etcd' | 'neo4j' | 'milvus' | 'qdrant' | 'influxdb' | 'influxdb3' | 'oxia' | 'databend';
 type ConnectionEnvironment = 'production' | 'staging' | 'development' | 'local' | 'other';
 ```
 

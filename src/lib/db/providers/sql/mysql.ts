@@ -170,6 +170,8 @@ type MySQLQueryable = Pick<PoolConnection, "query" | "execute">;
  * The one exception is a server that refuses COM_STMT_PREPARE itself, which
  * `probeClientSideBinding()` measures at connect: there a parameterised statement is
  * written out by `bindClientSide()` and goes over the text protocol like any other.
+ * A server that prepares some statements and refuses others is met per statement, by
+ * `bindAfterRefusedPrepare()` (#1403).
  *
  * `arrayRows` asks for each row as its values in column order (`rowsAsArray`), on every one of
  * those paths. A user's statement is read that way, see `buildQueryResult`; the provider's own
@@ -185,17 +187,27 @@ const runStatement = <T extends RowDataPacket[] = RowDataPacket[]>(
   if (core !== undefined && BINDS_CLIENT_SIDE.has(core) && params !== undefined && params.length > 0) {
     return runBoundClientSide<T>(queryable, core as CoreConnection, sql, params, arrayRows);
   }
+  const prepared = (answer: Promise<[T, FieldPacket[]]>, values: unknown[]): Promise<[T, FieldPacket[]]> =>
+    core === undefined
+      ? answer
+      : answer.catch((error: unknown) =>
+          bindAfterRefusedPrepare<T>(error, queryable, core as CoreConnection, sql, values, arrayRows),
+        );
   if (core !== undefined && UTF8_UNDER_UTF8MB3.has(core)) {
-    return runReadingUtf8mb3AsUtf8<T>(core as CoreConnection, statementOf(sql, arrayRows), params);
+    const answer = runReadingUtf8mb3AsUtf8<T>(core as CoreConnection, statementOf(sql, arrayRows), params);
+    return params === undefined || params.length === 0 ? answer : prepared(answer, params);
   }
   // Two calls each rather than one over `statementOf()`: mysql2 types the text and the options
   // object as two overloads, and the provider's own reads keep sending the bare text.
   if (params === undefined || params.length === 0) {
     return arrayRows ? queryable.query<T>({ sql, rowsAsArray: true }) : queryable.query<T>(sql);
   }
-  return arrayRows
-    ? queryable.execute<T>({ sql, rowsAsArray: true }, asExecuteParams(params))
-    : queryable.execute<T>(sql, asExecuteParams(params));
+  return prepared(
+    arrayRows
+      ? queryable.execute<T>({ sql, rowsAsArray: true }, asExecuteParams(params))
+      : queryable.execute<T>(sql, asExecuteParams(params)),
+    params,
+  );
 };
 
 /** The statement as mysql2 takes it: the bare text, or with `rowsAsArray` when array rows are asked for. */
@@ -385,17 +397,71 @@ const probeClientSideBinding = async (queryable: MySQLQueryable): Promise<boolea
   const { errno, fatal, message } = refusal as { errno?: unknown; fatal?: unknown; message?: unknown };
   if (fatal === true || errno === ER_MAX_PREPARED_STMT_COUNT_REACHED) return false;
   if ((await prepares()) === undefined) return false;
-  try {
-    const [rows] = await queryable.query<RowDataPacket[]>(`SELECT ${stringLiteral(BINDING_PROBE_VALUE)} AS bound`);
-    if (rows[0]?.bound !== BINDING_PROBE_VALUE) return false;
-  } catch {
-    return false;
-  }
+  if ((await literalReadsBack(queryable)) !== true) return false;
   console.info(
     `[MySQL] The server refused to prepare a statement (errno ${String(errno)}: ${String(message)}); this pool writes parameter values into the statement text.`,
   );
   return true;
 };
+
+/**
+ * Whether the server reads `stringLiteral()` of `BINDING_PROBE_VALUE` back unchanged, or
+ * `undefined` when it did not answer the question.
+ */
+const literalReadsBack = async (queryable: MySQLQueryable): Promise<boolean | undefined> => {
+  try {
+    const [rows] = await queryable.query<RowDataPacket[]>(`SELECT ${stringLiteral(BINDING_PROBE_VALUE)} AS bound`);
+    return rows[0]?.bound === BINDING_PROBE_VALUE;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * `This command is not supported in the prepared statement protocol yet`, MySQL's own code for a
+ * statement class the server will not prepare.
+ */
+const ER_UNSUPPORTED_PS = 1295;
+
+/** The core connections that answered `literalReadsBack()`, and what they answered. */
+const LITERAL_READ_BACK = new WeakMap<object, boolean>();
+
+/**
+ * A parameterised statement the server refused to PREPARE, sent once more as text with its values
+ * written in by `runBoundClientSide()` (#1403). Any other failure is rethrown unchanged.
+ *
+ * StarRocks prepares `SELECT ?` and refuses `UPDATE`, `INSERT` and `DELETE` with a placeholder:
+ * measured 2026-10-09 through mysql2 on `starrocks/allin1-ubuntu:latest` and `:3.3.22`, each
+ * answered errno 1295 `ER_UNSUPPORTED_PS`, a bare `prepare()` of the UPDATE did too, and after a
+ * refused `UPDATE pk SET n = n + 1 WHERE id = ?` the row still read `n = 0`. So the refusal comes
+ * at COM_STMT_PREPARE and nothing has run when the statement is sent again. Every inline row edit
+ * there failed with that sentence while the same UPDATE typed in the editor saved.
+ *
+ * Only 1295 on a live connection is retried, because it is the one answer that says "this
+ * statement, prepared" rather than "this statement". The written literal is the one
+ * `probeClientSideBinding()` checks at connect, and it is checked the same way on this connection
+ * before its first retry: a server that does not read it back unchanged keeps its refusal.
+ * Measured on both StarRocks versions and MySQL 26.7.0, the literal read back byte for byte in a
+ * text SELECT and in a text UPDATE.
+ */
+async function bindAfterRefusedPrepare<T extends RowDataPacket[]>(
+  error: unknown,
+  queryable: MySQLQueryable,
+  core: CoreConnection,
+  sql: string,
+  params: unknown[],
+  arrayRows: boolean,
+): Promise<[T, FieldPacket[]]> {
+  const { errno, fatal } = (error ?? {}) as { errno?: unknown; fatal?: unknown };
+  if (errno !== ER_UNSUPPORTED_PS || fatal === true) throw error;
+  let readsBack = LITERAL_READ_BACK.get(core);
+  if (readsBack === undefined) {
+    readsBack = await literalReadsBack(queryable);
+    if (readsBack !== undefined) LITERAL_READ_BACK.set(core, readsBack);
+  }
+  if (readsBack !== true) throw error;
+  return runBoundClientSide<T>(queryable, core, sql, params, arrayRows);
+}
 
 /**
  * One result set read as array rows: its columns named by `uniqueFieldNames`, and each row keyed by
@@ -641,10 +707,38 @@ async function openTransaction(conn: PoolConnection): Promise<unknown> {
  *   those two changes. Vitess refuses the QUOTED `EXPLAIN FORMAT='json'`, which is a
  *   reason to keep sending the unquoted form the probe and the strategy already use.
  */
-const EXPLAIN_PROBES: readonly (readonly [sql: string, format: ExplainFormat])[] = [
-  ["EXPLAIN FORMAT=JSON SELECT 1", "mysql-json"],
-  ["EXPLAIN SELECT 1", "mysql-text"],
+const EXPLAIN_PROBES: readonly (readonly [prefix: string, format: ExplainFormat])[] = [
+  ["EXPLAIN FORMAT=JSON", "mysql-json"],
+  ["EXPLAIN", "mysql-text"],
 ];
+
+/**
+ * One base table of the session's database, for the probes to name when the server refuses
+ * to explain a statement that names none (#1393).
+ *
+ * Vitess 25.0.0-SNAPSHOT (`vitess/vttestserver:mysql84`, built 2026-10-08) answers
+ * `EXPLAIN FORMAT=JSON SELECT 1`, `EXPLAIN SELECT 1` and `... SELECT 1 FROM dual` with `1105
+ * VT03031: EXPLAIN is only supported for single keyspace`, and answers both grammars for
+ * `SELECT * FROM customers LIMIT 0`. Through vtgate this lookup answers `customers`: vtgate
+ * rewrites the schema to the shard's `vt_e2e_0` and keeps the table's name (measured
+ * 2026-10-09).
+ */
+const EXPLAIN_PROBE_TABLE_SQL =
+  "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' LIMIT 1";
+
+/** The first grammar that explains `statement`, or `undefined` when the server refuses both. */
+const firstExplainFormat = async (queryable: MySQLQueryable, statement: string): Promise<ExplainFormat | undefined> => {
+  for (const [prefix, format] of EXPLAIN_PROBES) {
+    try {
+      await runStatement(queryable, `${prefix} ${statement}`);
+      return format;
+    } catch {
+      // Refused, so try the next grammar. The reason is the engine's own and there is
+      // nothing to report: the capability this produces IS the report.
+    }
+  }
+  return undefined;
+};
 
 /**
  * Which of those grammars this server accepts, or `undefined` when it accepts
@@ -657,20 +751,27 @@ const EXPLAIN_PROBES: readonly (readonly [sql: string, format: ExplainFormat])[]
  * take; asking the server what its grammar accepts is the same answer without the
  * enumeration.
  *
+ * `SELECT 1` is asked first, and a server that explains it is never asked anything else. Only
+ * when both grammars refuse it are they asked again against a table the session's database
+ * holds (`EXPLAIN_PROBE_TABLE_SQL`), because a refusal of `SELECT 1` can be about the statement
+ * rather than the grammar (#1393). `LIMIT 0` keeps the statement a plan with nothing to read. A
+ * database with no base table, or a lookup the server refuses, leaves the answer `undefined`.
+ *
  * Nothing here rejects. A grammar the server does not have is a fact about the
  * Explain panel, not about the connection, and `connect()` must not fail for it.
  */
 const probeExplainFormat = async (queryable: MySQLQueryable): Promise<ExplainFormat | undefined> => {
-  for (const [sql, format] of EXPLAIN_PROBES) {
-    try {
-      await runStatement(queryable, sql);
-      return format;
-    } catch {
-      // Refused, so try the next grammar. The reason is the engine's own and there is
-      // nothing to report: the capability this produces IS the report.
-    }
+  const format = await firstExplainFormat(queryable, "SELECT 1");
+  if (format !== undefined) return format;
+  let table: unknown;
+  try {
+    const [rows] = await runStatement(queryable, EXPLAIN_PROBE_TABLE_SQL);
+    table = rows[0]?.name;
+  } catch {
+    return undefined;
   }
-  return undefined;
+  if (typeof table !== "string" || table === "") return undefined;
+  return firstExplainFormat(queryable, `SELECT * FROM ${escapeMySQLIdentifier(table)} LIMIT 0`);
 };
 
 /**
@@ -1122,7 +1223,7 @@ function toSlowQueryStats(r: RowDataPacket): SlowQueryStats {
  * an appearance nobody can check. No component reads `HealthInfo.slowQueries` (the
  * monitoring Queries and Overview tabs read `MonitoringData.slowQueries`, a different
  * reading with its own `SlowQueryStats` shape), and the one caller of
- * `POST /api/db/health` - the 60s connection pulse in `src/hooks/use-connection-manager.ts` -
+ * `POST /api/db/health` - the 60s connection pulse in `src/hooks/use-connection-pulse.ts` -
  * reads `res.ok` and discards the body. The agent's curated health reading
  * (`src/lib/agent/tools.ts`) was the last live consumer and read only the list's LENGTH -
  * never `query`, never `avgTime` - and it no longer reads the list at all (#513). So this
@@ -1290,14 +1391,14 @@ const STORAGE_STATS_SQL = `
 // ============================================================================
 
 /**
- * The four schemas MySQL and MariaDB both reserve for themselves.
+ * Schemas the server reserves for itself.
  *
  * A hand-written name list, unlike Oracle's `ORACLE_MAINTAINED` and PostgreSQL's
  * `pg_depend` ownership test, because neither server publishes the fact: nothing in
- * `information_schema.SCHEMATA` says whether a schema is the server's own. What makes the
- * list safe is that all four names are RESERVED - `CREATE DATABASE mysql` answers
- * ER_DB_CREATE_EXISTS on a fresh server - so hiding them can never hide a database a
- * person created. Measured 2026-09-11 on MySQL 26.7.0 and MariaDB 12.3.2: `SCHEMATA` holds
+ * `information_schema.SCHEMATA` says whether a schema is the server's own. All four are
+ * RESERVED on MySQL and MariaDB - `CREATE DATABASE mysql` answers ER_DB_CREATE_EXISTS on a
+ * fresh server - so hiding them cannot hide a database a person created under that
+ * spelling. Measured 2026-09-11 on MySQL 26.7.0 and MariaDB 12.3.2: `SCHEMATA` holds
  * exactly these four plus the user's own on both.
  *
  * They are hidden from the BROWSER and remain fully reachable from the SQL editor, which is
@@ -1307,12 +1408,59 @@ const STORAGE_STATS_SQL = `
 const SYSTEM_SCHEMAS = ["information_schema", "mysql", "performance_schema", "sys"] as const;
 
 /**
- * Looked up by EXACT name, which is the comparison the former `NOT IN (...)` over
- * `SCHEMATA` made on MySQL (`utf8mb3_bin`) and TiDB (`utf8mb4_bin`), so the tree on both is
- * what it was. TiDB's upper-case `INFORMATION_SCHEMA` was never hidden by that clause and is
- * not hidden by this one.
+ * The reserved schemas that are reserved in EVERY spelling, compared case-insensitively.
+ *
+ * Only these two: measured 2026-10-09 on MySQL 8.4 with `lower_case_table_names=0`,
+ * `CREATE DATABASE INFORMATION_SCHEMA` and `CREATE DATABASE Performance_Schema` answer 1044,
+ * while `CREATE DATABASE MYSQL` and `CREATE DATABASE SYS` succeed. Folding `mysql` and `sys`
+ * too would hide those two user databases. TiDB v8.5.8 answers `SHOW DATABASES` with
+ * `INFORMATION_SCHEMA` and `PERFORMANCE_SCHEMA` in upper case, which is what this fold is
+ * for (#1428).
  */
-const SYSTEM_SCHEMA_SET: ReadonlySet<string> = new Set(SYSTEM_SCHEMAS);
+const CASE_FOLDED_SYSTEM_SCHEMAS: ReadonlySet<string> = new Set(["information_schema", "performance_schema"]);
+
+/**
+ * Databases a wire-compatible engine owns beyond the four above, keyed on what the server
+ * says it is, and compared by exact name.
+ *
+ * Keyed on the server rather than hidden everywhere, because none of these names is
+ * reserved on MySQL: measured 2026-10-09 on MySQL 8.4, `CREATE DATABASE` accepts
+ * `METRICS_SCHEMA`, `oceanbase`, `cluster` and `memsql`, and the tree must keep listing
+ * them there. Each was measured as listed as a person's database on its own engine (#1428).
+ *
+ * - TiDB v8.5.1 and v8.5.8: `METRICS_SCHEMA`, answered in upper case. `VERSION()` carries
+ *   `TiDB`.
+ * - OceanBase 4.4.2.1 CE: `oceanbase`. `VERSION()` carries `OceanBase`.
+ * - SingleStore 8.7.12 and 9.1.1: `cluster` and `memsql`. `VERSION()` is a plain `5.7.32`,
+ *   so `@@version_comment` (`SingleStoreDB source distribution ...`) is what names it.
+ */
+const ENGINE_OWNED_SCHEMAS: readonly {
+  readonly owns: (version: string | undefined, versionComment: string | undefined) => boolean;
+  readonly names: readonly string[];
+}[] = [
+  { owns: (version) => version !== undefined && /tidb/i.test(version), names: ["METRICS_SCHEMA"] },
+  { owns: (version) => version !== undefined && /oceanbase/i.test(version), names: ["oceanbase"] },
+  {
+    owns: (_version, versionComment) => versionComment !== undefined && /^SingleStoreDB\b/i.test(versionComment),
+    names: ["cluster", "memsql"],
+  },
+];
+
+/**
+ * The exact names hidden on a server that answered this `VERSION()` and `@@version_comment`.
+ * An unmeasured server gets the four reserved names only, so nothing a person could have
+ * created is hidden on a guess.
+ */
+function systemSchemasFor(version: string | undefined, versionComment: string | undefined): ReadonlySet<string> {
+  return new Set([
+    ...SYSTEM_SCHEMAS,
+    ...ENGINE_OWNED_SCHEMAS.filter((engine) => engine.owns(version, versionComment)).flatMap((engine) => engine.names),
+  ]);
+}
+
+function isSystemSchema(name: string, systemSchemas: ReadonlySet<string>): boolean {
+  return systemSchemas.has(name) || CASE_FOLDED_SYSTEM_SCHEMAS.has(name.toLowerCase());
+}
 
 /**
  * The containers this connection has, which on MySQL is one level: databases.
@@ -1987,6 +2135,23 @@ const probeServerVersion = async (queryable: MySQLQueryable): Promise<string | u
     return version === null || version === undefined ? undefined : String(version);
   } catch {
     // Refused, so the flavour is unmeasured. The capability this produces IS the report.
+    return undefined;
+  }
+};
+
+/**
+ * What this server says about its own build in `@@version_comment`, or `undefined` when it
+ * would not say. The same never-rejects contract as `probeServerVersion`, for the same reason:
+ * the answer only decides which databases the tree hides, and an unmeasured comment hides
+ * nothing beyond the reserved four.
+ */
+const probeVersionComment = async (queryable: MySQLQueryable): Promise<string | undefined> => {
+  try {
+    const [rows] = await runStatement(queryable, "SELECT @@version_comment AS version_comment");
+    const comment = rows[0]?.version_comment;
+    return comment === null || comment === undefined ? undefined : String(comment);
+  } catch {
+    // Refused, so the engine is unmeasured and only the reserved names are hidden.
     return undefined;
   }
 };
@@ -2812,6 +2977,7 @@ export class MySQLProvider extends SQLBaseProvider {
    * `measuredExplainFormat` stores a grammar and not the text of the probe that found it.
    */
   private measuredFlavour: MySQLFlavour = "mysql";
+  private systemSchemas: ReadonlySet<string> = systemSchemasFor(undefined, undefined);
 
   /**
    * Which maintenance verbs this server's grammar has, measured by `probeMaintenance()` at connect
@@ -2957,7 +3123,10 @@ export class MySQLProvider extends SQLBaseProvider {
       // Which server this is, which is what decides the object-kind declaration (#789).
       // Measured rather than derived from the type id, because there is no `mariadb` type
       // id to derive from.
-      this.measuredFlavour = flavourFor(await probeServerVersion(conn));
+      const version = await probeServerVersion(conn);
+      this.measuredFlavour = flavourFor(version);
+      // Which databases this engine owns beyond the reserved four (#1428). Never rejects.
+      this.systemSchemas = systemSchemasFor(version, await probeVersionComment(conn));
       // Which of ANALYZE, OPTIMIZE and CHECK TABLE this server has (#1387). Never rejects.
       this.measuredMaintenance = await probeMaintenance(conn, this.config.database);
       // Every later acquisition, this probe connection's included, then reads utf8mb3
@@ -3390,7 +3559,7 @@ export class MySQLProvider extends SQLBaseProvider {
       return (
         rows
           .map((row) => String(Object.values(row)[0]))
-          .filter((name) => !SYSTEM_SCHEMA_SET.has(name))
+          .filter((name) => !isSystemSchema(name, this.systemSchemas))
           .map((name) => ({ path: [name], name, level: 0, isSessionDefault: name === session?.name }))
           // By path, the rule `listObjects` orders by: vtgate answers SHOW DATABASES unsorted.
           .sort((left, right) => comparePaths(left.path, right.path))
@@ -3953,7 +4122,7 @@ export class MySQLProvider extends SQLBaseProvider {
       // `HealthInfo.slowQueries` (the monitoring Queries and Overview tabs read
       // `MonitoringData.slowQueries`, a different reading), and the one caller of
       // `POST /api/db/health` - the 60s connection pulse in
-      // `src/hooks/use-connection-manager.ts` - looks at `res.ok` and discards the body.
+      // `src/hooks/use-connection-pulse.ts` - looks at `res.ok` and discards the body.
       //
       // The operator is not left without the reason, because the SAME refusal reaches
       // them on the path that does have a channel: `getSlowQueries()` below lets it

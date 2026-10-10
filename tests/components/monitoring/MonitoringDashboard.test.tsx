@@ -138,12 +138,27 @@ mock.module("@/components/monitoring/tabs/QueriesTab", () => ({
   },
 }));
 
+// Captures the props the dashboard hands the sessions tab, for the Terminate wiring (#1424).
+const sessionsTabProps: Array<Record<string, unknown>> = [];
+
 mock.module("@/components/monitoring/tabs/SessionsTab", () => ({
-  SessionsTab: () => {
+  SessionsTab: (props: Record<string, unknown>) => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const React = require("react");
+    sessionsTabProps.push(props);
     return React.createElement("div", { "data-testid": "monitoring-sessionstab" }, "SessionsTab");
   },
+}));
+
+// The signed-in role `useAuth` answers; beforeEach puts the admin back (#1424).
+let currentRole = "admin";
+
+mock.module("@/hooks/use-auth", () => ({
+  useAuth: () => ({
+    user: { role: currentRole },
+    isAdmin: currentRole === "admin",
+    handleLogout: mock(async () => {}),
+  }),
 }));
 
 // Captures the props the dashboard hands the tables tab, so the capability wiring
@@ -183,12 +198,16 @@ const mockLabels = {
 // assert the lookup follows the selection rather than firing on null.
 const providerMetadataCalls: Array<{ id?: string } | null> = [];
 
+// The capabilities the metadata mock answers with; a test swaps in its own declaration and
+// beforeEach puts the shared one back.
+let currentCapabilities: Record<string, unknown> = mockCapabilities;
+
 mock.module("@/hooks/use-provider-metadata", () => ({
   useProviderMetadata: mock((connection: { id?: string } | null) => {
     providerMetadataCalls.push(connection);
     return {
       metadata: {
-        capabilities: mockCapabilities,
+        capabilities: currentCapabilities,
         labels: mockLabels,
       },
       isLoading: false,
@@ -240,6 +259,8 @@ describe("MonitoringDashboard", () => {
     mockSetRefreshInterval.mockClear();
     mockUseMonitoringData.mockImplementation(monitoringDataDefaults);
     selectCallbacks.clear();
+    currentCapabilities = mockCapabilities;
+    currentRole = "admin";
   });
 
   test("renders monitoring title", async () => {
@@ -321,6 +342,32 @@ describe("MonitoringDashboard", () => {
     // Auto-refresh toggle button has title containing "auto-refresh"
     const autoRefreshButton = container.querySelector('[title="Pause auto-refresh"]');
     expect(autoRefreshButton).not.toBeNull();
+  });
+
+  test("shows the billing sentence beside auto-refresh when the capability is declared, and none otherwise", async () => {
+    // A provider whose compute resumes on any statement and is billed until it suspends (a Databend
+    // Cloud warehouse) declares `resumesBilledCompute`: every auto-refresh tick keeps it awake.
+    const sentence = "Each refresh runs statements on this connection, which keeps its billed compute running.";
+
+    let renderResult: ReturnType<typeof render>;
+    await act(async () => {
+      renderResult = render(<MonitoringDashboard />);
+    });
+    expect(renderResult!.queryByText(sentence)).toBeNull();
+    expect(
+      renderResult!.container.querySelector('[title="Pause auto-refresh"]')?.hasAttribute("aria-describedby"),
+    ).toBe(false);
+    cleanup();
+
+    currentCapabilities = { ...mockCapabilities, resumesBilledCompute: true };
+    await act(async () => {
+      renderResult = render(<MonitoringDashboard />);
+    });
+    const note = renderResult!.queryByText(sentence);
+    expect(note).not.toBeNull();
+    // The toggle names the sentence as its description, so a screen reader hears the cost on it.
+    const toggle = renderResult!.container.querySelector('[title="Pause auto-refresh"]');
+    expect(toggle?.getAttribute("aria-describedby")).toBe(note!.id);
   });
 
   test("no connection shows empty state", async () => {
@@ -537,6 +584,42 @@ describe("MonitoringDashboard", () => {
     expect(providerMetadataCalls[providerMetadataCalls.length - 1]?.id).toBe("c2");
   });
 
+  test("tells the tables tab whether the connection is read-only (#1418)", async () => {
+    const openTables = async () => {
+      const user = userEvent.setup();
+      tablesTabProps.length = 0;
+      let renderResult: ReturnType<typeof render>;
+      await act(async () => {
+        renderResult = render(<MonitoringDashboard />);
+      });
+      const { queryByTestId, container } = renderResult!;
+      const tablesTrigger = Array.from(container.querySelectorAll('[role="tab"]')).find((t) =>
+        t.textContent?.includes("Tables"),
+      ) as HTMLElement;
+      await user.click(tablesTrigger);
+      await waitFor(() => {
+        expect(queryByTestId("monitoring-tablestab")).not.toBeNull();
+      });
+      return tablesTabProps[tablesTabProps.length - 1].readOnly;
+    };
+
+    // The file's default connections carry no readOnly.
+    expect(await openTables()).toBe(false);
+    cleanup();
+
+    const storageModule = await import("@/lib/storage");
+    const storage = storageModule.storage as unknown as Record<string, unknown>;
+    const originalGetConnections = storage.getConnections;
+    storage.getConnections = mock(() => [
+      { id: "c1", name: "Guarded", type: "postgres", host: "localhost", readOnly: true, createdAt: new Date() },
+    ]);
+    try {
+      expect(await openTables()).toBe(true);
+    } finally {
+      storage.getConnections = originalGetConnections;
+    }
+  });
+
   test("hands the hook's previewMaintenance to the tables tab (spec 3.11)", async () => {
     const user = userEvent.setup();
     const previewMaintenance = mock(async () => ({ summary: "Loads users.", facts: [] }));
@@ -558,5 +641,57 @@ describe("MonitoringDashboard", () => {
     });
 
     expect(tablesTabProps[tablesTabProps.length - 1].onPreviewMaintenance).toBe(previewMaintenance);
+  });
+
+  // The route refuses maintenance and `kill` to a non-admin, so both tabs are told the signed-in role (#1424).
+  test("tells the sessions and tables tabs whether the signed-in user is an admin", async () => {
+    const openTab = async (name: string) => {
+      const user = userEvent.setup();
+      let renderResult: ReturnType<typeof render>;
+      await act(async () => {
+        renderResult = render(<MonitoringDashboard />);
+      });
+      const trigger = Array.from(renderResult!.container.querySelectorAll('[role="tab"]')).find((t) =>
+        t.textContent?.includes(name),
+      ) as HTMLElement;
+      await user.click(trigger);
+      cleanup();
+    };
+    const lastIsAdmin = async () => {
+      sessionsTabProps.length = 0;
+      tablesTabProps.length = 0;
+      await openTab("Sessions");
+      await openTab("Tables");
+      return [sessionsTabProps.at(-1)?.isAdmin, tablesTabProps.at(-1)?.isAdmin];
+    };
+
+    expect(await lastIsAdmin()).toEqual([true, true]);
+    currentRole = "user";
+    expect(await lastIsAdmin()).toEqual([false, false]);
+  });
+
+  test("hands the sessions tab the declared capabilities with the connected maintenance over them (#1424)", async () => {
+    const user = userEvent.setup();
+    // The connected server refused `kill` where the type id declares it, as CockroachDB's narrowing can (#1387).
+    currentCapabilities = { ...mockCapabilities, maintenanceOperations: ["analyze", "kill"] };
+    const connected = { ...monitoringDataDefaults() };
+    connected.data = {
+      ...(connected.data as Record<string, unknown>),
+      maintenance: { maintenanceOperations: ["analyze"] },
+    };
+    mockUseMonitoringData.mockImplementation(() => connected);
+    sessionsTabProps.length = 0;
+
+    let renderResult: ReturnType<typeof render>;
+    await act(async () => {
+      renderResult = render(<MonitoringDashboard />);
+    });
+    const trigger = Array.from(renderResult!.container.querySelectorAll('[role="tab"]')).find((t) =>
+      t.textContent?.includes("Sessions"),
+    ) as HTMLElement;
+    await user.click(trigger);
+
+    const capabilities = sessionsTabProps.at(-1)?.capabilities as { maintenanceOperations: string[] };
+    expect(capabilities.maintenanceOperations).toEqual(["analyze"]);
   });
 });

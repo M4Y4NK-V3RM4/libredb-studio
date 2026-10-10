@@ -139,7 +139,12 @@ export type DatabaseType =
   // own (`src/lib/db/providers/keyvalue/oxia/`). Its editor text is one `oxia client` read command. Read-only in
   // this version whatever `readOnly` says. The connection's Database field is the namespace and Password is a bearer
   // token; `dataServers` lists a cluster's data servers.
-  | "oxia";
+  | "oxia"
+  // Databend, a cloud data warehouse read and written over its HTTP query API (`POST /v1/query`) by a client of this
+  // repository's own (`src/lib/db/providers/sql/databend/`), extending `SQLBaseProvider`. Self-hosted Databend and
+  // Databend Cloud are the same id: a Cloud connection differs in host, TLS and the `warehouse` below. The
+  // connection's Database field is the session database, inside the `default` catalog.
+  | "databend";
 
 export type ConnectionEnvironment = "production" | "staging" | "development" | "local" | "other";
 
@@ -352,6 +357,13 @@ export interface DatabaseConnection {
    * other engine.
    */
   dataServers?: string;
+  /**
+   * Databend only: the warehouse every statement of this connection runs on, sent as the `X-DATABEND-WAREHOUSE`
+   * header. Databend Cloud requires one and resumes a suspended warehouse on the first statement, billing while it
+   * runs; self-hosted Databend leaves it empty. It picks compute, not the catalog, and it is not a secret. Absent and
+   * empty are one value. Read by no other engine.
+   */
+  warehouse?: string;
   /**
    * Read no catalog when this connection opens.
    *
@@ -677,6 +689,13 @@ export interface SourceTabState {
   readonly activePartId?: string;
   /** The catalog-change counter's value when this document was read. */
   readonly readAtToken?: number;
+  /**
+   * The wall-clock moment this document was read (`Date.now()`), so "Stored by the engine as it
+   * was submitted. Complete as shown." is anchored in time rather than left to mean "at some
+   * point" (#1407). Not persisted either, for the same reason `readAtToken` is not: a restored
+   * tab re-reads, so there is no prior read to date.
+   */
+  readonly readAt?: number;
   /**
    * WHICH part the reader is editing, and never a boolean (#789 Phase 3, discussion #778).
    *

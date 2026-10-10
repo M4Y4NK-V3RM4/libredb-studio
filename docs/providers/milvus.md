@@ -89,13 +89,17 @@ These refusals are permanent: promoting one is a new owner decision, not a measu
 
 ### 3.4 The read-only mode
 
-With `readOnly` on the connection or in an agent execution profile, Load and Release are refused before any request, with a sentence naming where the mode was set:
+With `readOnly` on the connection or in an agent execution profile, Load and Release are refused before any request, with a sentence naming where the mode was set.
+Their preview is refused in the same sentence and reads nothing, so the dialog shows the refusal in place of a preview and offers no confirm button:
 
 | Where the mode was set | Refusal |
 |---|---|
 | The operator's seed file | This connection is read-only (set in the operator's seed file). |
 | A connection of the user's own | This connection is read-only: turn off Read-only in its settings to write. |
 | An agent execution profile, on a connection that is not read-only | This run opens the connection read-only (agent execution profile). |
+
+Studio does not offer what the mode would refuse: on a read-only connection the tree's row menu and the collection rows of Admin > Operations and of Monitoring > Tables draw neither Load nor Release, and Operations says "This connection is read-only: use a read-write connection for maintenance" beside the collections.
+A refusal that still happens is shown in the dialog that asked and written into the operation log entry.
 
 Every console request of this version is a read, so the mode changes nothing else.
 The mode binds a `user` only on a managed seed whose secret only the seed holds, and only when the server has authorization enabled: Milvus with `authorizationEnabled: false`, its default, accepts any credential or none, so a connection that works proves nothing about the server, and Studio cannot tell.
@@ -252,6 +256,11 @@ A body takes no `//` comment (`docs/BACKLOG.md` D158).
 - The filter is Milvus's own expression, which the server parses and type-checks; every filter of one request together is at most 64 KiB.
 - Every search parameter is checked per index type before the request is sent, and every key outside the table of section 5.6 is refused by name although the server ignores it.
 
+Milvus 3.0.2 can return `enable_dynamic_field: true` from DescribeCollection without listing `$meta` in `schema.fields` (#1417).
+Studio uses that flag to include `$meta` in the default projection and accept an explicit `"outputFields": ["$meta"]`, whether or not the field is listed.
+The object tree exposes one nullable `$meta` column of type `JSON (dynamic)` in either case.
+On a collection without dynamic fields, requesting `$meta` is refused with a message saying that the collection has no dynamic field.
+
 ### 5.3 Examples
 
 ```text
@@ -387,6 +396,7 @@ A function's name, type and input and output fields are shown, and none of its p
 
 A click on a collection runs `entities/query` with its database and name, an empty filter and a limit of 100; on an unloaded collection it answers the not-loaded sentence and never loads.
 Generate Command writes a runnable search over the collection's first dense vector field with a probe vector of the right dimension, a comment naming the field, and a comment for each other vector field; a collection whose only vectors are sparse gets both forms as comments, and a BM25 output field a text search.
+Its `outputFields` includes the scalar fields and `$meta` when dynamic fields are enabled, so the generated search returns dynamic keys too.
 Generate Code, Profile, Generate Test Data, Generate Count Query and the SQL INSERT and DDL export formats are not offered.
 
 ### 6.4 Object edit (#789): nothing to write

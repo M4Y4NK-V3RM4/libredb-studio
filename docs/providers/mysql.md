@@ -192,6 +192,7 @@ module-local helper, `runStatement(queryable, sql, params?)`
 |-----------|--------|----------|
 | carries parameters | `conn.execute(sql, params)` | binary, server-side prepared |
 | carries parameters, on a server measured to refuse `COM_STMT_PREPARE` | `conn.query(sql, params)` | text, values escaped in client-side ([below](#a-server-that-prepares-nothing-binds-client-side)) |
+| carries parameters, and the server refused to prepare this statement with errno 1295 | `conn.execute`, then once more as `conn.query` | text, values escaped in client-side ([below](#a-server-that-refuses-to-prepare-some-statements)) |
 | carries none (or an empty array) | `conn.query(sql)` | text |
 
 Parameterised statements are unchanged: the placeholders are what the prepared protocol is for, and
@@ -375,7 +376,50 @@ their tables (49 under `system`) and views, a table expands to its columns and o
 storage statistics answer, and an inline edit of a `VARCHAR` to `it's \ edited` was saved and read
 back exactly. Through the provider, a value holding all nine characters above round-tripped through an
 `INSERT`, an `UPDATE ... WHERE name = ?` (one row matched) and a read. What stays unavailable there is
-the engine's: see [README.md](./README.md#wire-compatible-engines).
+the engine's: no `information_schema.ROUTINES`, `TRIGGERS` or `EVENTS`, no `SHOW STATUS`, no
+`information_schema.processlist` or `performance_schema`, no index statistics, no foreign keys, and no
+transaction state in the status flags ([§6.0.1](#601-servers-that-report-no-transaction-state)).
+Databend is no longer a relative of this provider: it ships as the `databend` type-id over its own HTTP
+query API ([databend.md](./databend.md)), and these measurements stay as the record of what its MySQL
+handler answers a `mysql` connection.
+
+#### A server that refuses to prepare some statements
+
+StarRocks prepares a `SELECT` and refuses to prepare data-changing statements (#1403). Measured
+2026-10-09 through mysql2 on `starrocks/allin1-ubuntu:latest` (`current_version()` `4.1.6-6862092`)
+and `:3.3.22` (`3.3.22-753696f`), a PRIMARY KEY table, one connection each:
+
+| Call | Answer |
+|---|---|
+| `execute("SELECT ? AS x", [1])` | `[{"x":1}]` |
+| `execute` of an `UPDATE`, an `INSERT` or a `DELETE` with a placeholder | errno 1295 `ER_UNSUPPORTED_PS`: `This command is not supported in the prepared statement protocol yet` |
+| `prepare("UPDATE pk SET n = n + 1 WHERE id = ?")`, nothing executed | the same |
+| the row after a refused `UPDATE pk SET n = n + 1 WHERE id = ?` | `n = 0`, unchanged |
+
+So `probeClientSideBinding()` keeps such a pool on the prepared path, its reads answer, and every
+inline row edit failed with that sentence while the same `UPDATE` typed in the editor saved. The
+refusal comes at `COM_STMT_PREPARE` and nothing has run, so `runStatement` answers it per statement:
+a parameterised statement still goes to `execute()`, and only when that rejects with errno 1295 on a
+live connection is the same statement sent once more through `runBoundClientSide()`, written with the
+literal described above and subject to the same `NO_BACKSLASH_ESCAPES` check. Before the first such
+retry on a connection, the literal round trip `probeClientSideBinding()` asks for at connect is asked
+on that connection and the answer kept for it; a server that does not read it back unchanged keeps the
+1295 refusal. Any other error, a fatal one included, is the server's verdict on the statement and is
+not retried. A server that prepares the statement, MySQL and Doris among them, never reaches this.
+
+Measured through the provider on 2026-10-09, the inline editor's own two statements (the key check
+`SELECT ... COUNT(*) ... WHERE id IN (?)`, then `UPDATE pk SET name = ? WHERE id = ?` with
+`it's a "quoted" \path`), then `UPDATE pk SET n = n + 1 WHERE id = ?`:
+
+| Server | before #1403 | since |
+|---|---|---|
+| StarRocks 4.1.6 and 3.3.22 | both `UPDATE`s refused with the 1295 sentence; the row unchanged | both saved: `rowCount` 1, the value read back exactly, `n` went from 0 to 1 |
+| MySQL 26.7.0 (`mysql:latest`) | saved, prepared | the same |
+| Apache Doris 4.1.3 (`apache/doris:all-in-one-4.1.3`, a UNIQUE KEY table) | saved, prepared | the same |
+
+`tests/integration/db/mysql-wire-decoding.test.ts` runs the real driver against an in-process server
+that prepares a `SELECT` and refuses an `UPDATE`, an `INSERT` or a `DELETE` with 1295, on both
+decoding paths, and pins the text it receives.
 
 ### 3.5 No server-side query timeout
 
@@ -809,6 +853,14 @@ the connection the pool check already holds, `probeExplainFormat()`
 that is refused, `EXPLAIN SELECT 1`. The first statement that succeeds names the format
 `getCapabilities()` then declares.
 
+Only when both are refused does it read one base table of the session's database
+(`SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() AND
+table_type = 'BASE TABLE' LIMIT 1`) and ask the same two grammars, in the same order, about
+`SELECT * FROM <table> LIMIT 0` (#1393). A refusal of `SELECT 1` can be about the statement rather
+than the grammar, as the Vitess 25.0.0-SNAPSHOT row shows. A server that explains `SELECT 1` is never
+asked for a table, so every other row below sends exactly what it sent before. A database with no
+base table, or a lookup the server refuses, leaves no Explain.
+
 Measured 2026-09-06 through `mysql2` 3.24.2 over the text protocol, one connection per engine:
 
 | Engine (image) | `EXPLAIN FORMAT=JSON SELECT 1` | plain `EXPLAIN SELECT 1` | resulting `explainFormat` |
@@ -821,7 +873,7 @@ Measured 2026-09-06 through `mysql2` 3.24.2 over the text protocol, one connecti
 | Apache Doris 4.1.3 (`apache/doris:all-in-one-4.1.3`) | errno 1105 `mismatched input '=' expecting {<EOF>, ';'}(line 1, pos 14)` | ok, one column `Explain String(Nereids Planner)` | `mysql-text` |
 | Vitess 24.0.2 (`vitess/vttestserver:v24.0.2-mysql80`) | ok, one column `EXPLAIN` (the QUOTED `EXPLAIN FORMAT='json'` is errno 1105 there; the unquoted form the probe sends is accepted) | ok, 12 tabular columns | `mysql-json` |
 | Vitess 24.0.4 (`vitess/vttestserver:v24.0.4-mysql84`), re-measured 2026-10-04 | ok | ok | `mysql-json` |
-| Vitess 25.0.0-SNAPSHOT (`vitess/vttestserver:mysql84`, the floating tag, built 2026-10-02), measured 2026-10-04 | errno 1105 `VT03031: EXPLAIN is only supported for single keyspace`, because `SELECT 1` names no table; `EXPLAIN FORMAT=JSON SELECT * FROM customers` is answered | the same `VT03031` | none, so the Explain panel is unavailable on that build (an open defect in the probe's statement, not fixed here) |
+| Vitess 25.0.0-SNAPSHOT (`vitess/vttestserver:mysql84`, the floating tag, built 2026-10-02 and again 2026-10-08), measured 2026-10-04 and 2026-10-09 | errno 1105 `VT03031: EXPLAIN is only supported for single keyspace`, because `SELECT 1` names no table (`SELECT 1 FROM dual` too); `EXPLAIN FORMAT=JSON SELECT * FROM customers LIMIT 0` is answered | the same `VT03031` | `mysql-json` since #1393, from the table form; the lookup answers `customers` through vtgate, which rewrites the schema to the shard's `vt_e2e_0`. An empty keyspace has no table to ask about and still gets none |
 | OceanBase CE 4.4.2 (`oceanbase/oceanbase-ce:4.4.2-lts`, tenant `test`) | ok, 8 rows in one column `Query Plan`, an ASCII plan | ok, 9 rows in the same column | `mysql-json` |
 | Databend 1.2.925 (`datafuselabs/databend:v1.2.925-patch-11`) | errno 1105, SyntaxException | ok, one column `explain`, 5 rows | `mysql-text` |
 
@@ -1201,14 +1253,27 @@ That is what ends the single-database confinement. MySQL resolves a qualified na
 on one connection, unlike PostgreSQL where a `pg` pool is pinned to one database, so every
 database the server holds is genuinely browsable from one session.
 
-Four schemas are hidden: `information_schema`, `mysql`, `performance_schema`, `sys`. It is a
-hand-written name list, unlike Oracle's `ORACLE_MAINTAINED` and PostgreSQL's `pg_depend` ownership
-test, because neither server publishes the fact: nothing in `SCHEMATA` says whether a schema is the
-server's own. What makes the list safe is that all four names are RESERVED, so hiding them can never
-hide a database a person created; measured 2026-09-11, `SCHEMATA` holds exactly these four plus the
-user's own on both servers. They are hidden from the BROWSER and stay fully reachable from the SQL
-editor, the same treatment `pg_catalog` gets on PostgreSQL, and this provider itself reads two of
-them.
+Four schemas are hidden on every server: `information_schema`, `mysql`, `performance_schema`, `sys`.
+It is a hand-written name list, unlike Oracle's `ORACLE_MAINTAINED` and PostgreSQL's `pg_depend`
+ownership test, because neither server publishes the fact: nothing in `SCHEMATA` says whether a schema
+is the server's own. What makes the list safe is that all four names are RESERVED, so hiding them can
+never hide a database a person created; measured 2026-09-11, `SCHEMATA` holds exactly these four plus
+the user's own on both servers. They are hidden from the BROWSER and stay fully reachable from the SQL
+editor, the same treatment `pg_catalog` gets on PostgreSQL, and this provider itself reads two of them.
+
+Some wire-compatible engines own more, and those names are hidden **only on the engine that owns
+them**, keyed on what the server says it is at connect time (#1428):
+
+| Engine | Hidden as well | Recognised by |
+|---|---|---|
+| TiDB v8.5.1, v8.5.8 | `METRICS_SCHEMA` | `VERSION()` contains `TiDB` |
+| OceanBase 4.4.2.1 CE | `oceanbase` | `VERSION()` contains `OceanBase` |
+| SingleStore 8.7.12, 9.1.1 | `cluster`, `memsql` | `@@version_comment` starts with `SingleStoreDB`; `VERSION()` is a plain `5.7.32` |
+
+They are not hidden everywhere because none of them is reserved on MySQL: measured 2026-10-09 on
+MySQL 8.4, `CREATE DATABASE` accepts `METRICS_SCHEMA`, `oceanbase`, `cluster` and `memsql`, and a
+MySQL user's database of that name stays listed. A server whose `@@version_comment` is refused or NULL
+is treated as unmeasured and gets the reserved four only.
 
 **`SHOW DATABASES` and not `information_schema.SCHEMATA`, because of Vitess.** Through vtgate the two
 disagree, and only `SHOW DATABASES` names something a statement can address. Measured 2026-10-04 on
@@ -1255,16 +1320,17 @@ started with `--skip-show-database`, as a user granted only `e2e.*`: `SHOW DATAB
 errno 1227, and only on it, `listContainers()` reads `SCHEMATA` instead, so that user's tree shows `e2e`
 exactly as it did before. Any other failure is raised as it is.
 
-Three consequences of reading a `SHOW` statement. The reserved four are dropped by the provider after
+Three consequences of reading a `SHOW` statement. The reserved names are dropped by the provider after
 the read rather than by a `WHERE`, because vtgate ignores a `WHERE` on `SHOW DATABASES` and answers all
-five rows anyway; the comparison is by exact name, which is what the former `NOT IN (...)` did on
-MySQL (`utf8mb3_bin`) and TiDB (`utf8mb4_bin`), so TiDB's upper-case `INFORMATION_SCHEMA`,
-`METRICS_SCHEMA` and `PERFORMANCE_SCHEMA` are listed exactly as before. On MariaDB, whose `SCHEMATA`
-collates `utf8mb3_general_ci`, the former clause compared without regard to case, so a user database
-named `SYS` or `Mysql` (possible with `lower_case_table_names=0`) was hidden before and is listed now.
-And the order is the provider's code-point order over the path, the rule `listObjects` already uses,
-because vtgate answers unsorted; on MariaDB that differs from the former SQL order only for database
-names that differ in case.
+five rows anyway. `information_schema` and `performance_schema` are compared without regard to case,
+because TiDB answers them as `INFORMATION_SCHEMA` and `PERFORMANCE_SCHEMA`, and no spelling of either
+can be a person's: measured 2026-10-09 on MySQL 8.4 with `lower_case_table_names=0`, `CREATE DATABASE
+INFORMATION_SCHEMA` and `CREATE DATABASE Performance_Schema` both answer 1044. `mysql` and `sys` are
+compared by exact name, because the same server accepts `CREATE DATABASE MYSQL` and `CREATE DATABASE
+SYS`, and those stay listed. The engine-owned names above are exact too, in the spelling each engine
+answers. And the order is the provider's code-point order over the path, the rule `listObjects`
+already uses, because vtgate answers unsorted; on MariaDB that differs from the former SQL order only
+for database names that differ in case.
 
 `Container.isSessionDefault` comes from `SELECT DATABASE()`, the server's own answer for which
 database the session is in, rather than from `config.database`, because the configured value is what a
@@ -1971,7 +2037,7 @@ reading does not have. `HealthInfo.slowQueries` is a `SlowQuery[]`: no error fie
 refusal cannot be represented in this reading at all. Nothing renders it either — no component reads
 `HealthInfo.slowQueries` (the monitoring Queries and Overview tabs read `MonitoringData.slowQueries`,
 a different reading), and the one caller of `POST /api/db/health`, the 60s connection pulse in
-[`use-connection-manager.ts`](../../src/hooks/use-connection-manager.ts), reads `res.ok` and
+[`use-connection-pulse.ts`](../../src/hooks/use-connection-pulse.ts), reads `res.ok` and
 discards the body. `ProviderLabels.slowQueriesEmptyState` is **not** a carrier for it: `QueriesTab`
 renders that one fixed sentence for every empty list whatever produced it, which is why the sentence
 had to stop naming a cause (it used to end *"enable the Performance Schema to see them"* — the one
@@ -2003,11 +2069,11 @@ and the missing threshold are stated at
 [`HEALTH_SLOW_QUERY_LIMIT`](../../src/lib/db/providers/sql/mysql.ts) and pinned by a test that reads
 the statement the health call actually issued.
 
-**Sibling engines.** All nine MySQL-protocol engines in
+**Sibling engines.** All eight MySQL-protocol engines in
 [`compatibility.ts`](../../src/lib/db/compatibility.ts) — MariaDB, Percona Server for MySQL, TiDB,
-StarRocks, Apache Doris, Databend, Vitess, OceanBase, SingleStore — reach this exact code, so every
+StarRocks, Apache Doris, Vitess, OceanBase, SingleStore — reach this exact code, so every
 one of them showed the sentence and none of them shows it now. MariaDB and Percona are the two
-measured above; on the other seven the health line now carries whatever their own
+measured above; on the other six the health line now carries whatever their own
 `performance_schema.events_statements_summary_by_digest` publishes for the connected schema, and an
 empty list where it publishes nothing or the table cannot be read. OceanBase is the one whose reading
 changes shape without changing meaning: its tenants have no `performance_schema` database at all

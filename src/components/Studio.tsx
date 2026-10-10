@@ -47,6 +47,7 @@ import { useAgentArtifact } from "@/components/agent/use-agent-artifact";
 import { useAgentPrefill } from "@/components/agent/use-agent-prefill";
 import { useToast } from "@/hooks/use-toast";
 import { useProviderMetadata } from "@/hooks/use-provider-metadata";
+import { useConnectionPulse } from "@/hooks/use-connection-pulse";
 import { useConnectionOrder } from "@/hooks/use-connection-order";
 import { useConnectionGroups } from "@/hooks/use-connection-groups";
 import { useAuth } from "@/hooks/use-auth";
@@ -111,6 +112,12 @@ export default function Studio() {
   // 2. Connection Manager + Provider Metadata
   const conn = useConnectionManager(storageReady);
   const { metadata, error: metadataError, retry: retryMetadata } = useProviderMetadata(conn.activeConnection);
+  // After the metadata, because the declaration decides whether a health check may be sent at all.
+  const connectionPulse = useConnectionPulse(conn.activeConnection, metadata);
+  // A connection the page opened by itself reads nothing while every request to it can resume billed compute, until
+  // the person uses it (CL-CORE-2): the manager holds the inventory, and the tree is held here, with the declaration
+  // that decides when the tree is drawn at all, so it is held before its first read.
+  const billedComputeHold = conn.activeAwaitsUse && metadata?.capabilities.resumesBilledCompute === true;
   const { favoriteIds, toggleFavorite } = useFavoriteConnections(storageReady);
   const { order: connectionOrder, setOrder: setConnectionOrder } = useConnectionOrder(storageReady);
   const { groups: connectionGroups, ...groupActions } = useConnectionGroups(storageReady);
@@ -150,8 +157,8 @@ export default function Studio() {
    *
    * MERGED BY SPREAD, and an explicitly-undefined key in the patch is therefore a CLEAR
    * rather than a no-op: that is how the stale banner's re-read control works, sending
-   * `{ document: undefined, failure: undefined, readAtToken: undefined }` to put the tab back
-   * into the state the viewer reads from.
+   * `{ document: undefined, failure: undefined, readAtToken: undefined, readAt: undefined }` to
+   * put the tab back into the state the viewer reads from.
    *
    * STABLE across renders, which is a requirement rather than an optimisation: the viewer's
    * read effect lists `onChange` among its dependencies, so a fresh identity every render
@@ -290,7 +297,7 @@ export default function Studio() {
    */
   const handleApplied = useCallback(() => {
     objectsChanged();
-    onSourceChange({ document: undefined, failure: undefined, readAtToken: undefined });
+    onSourceChange({ document: undefined, failure: undefined, readAtToken: undefined, readAt: undefined });
     toast({ title: "Applied. Reading the definition again." });
   }, [objectsChanged, onSourceChange, toast]);
 
@@ -408,6 +415,7 @@ export default function Studio() {
     fetchSchema: conn.fetchSchema,
     onObjectsChanged: objectsChanged,
     onTransactionEnded: txn.markTransactionEnded,
+    onStatementSent: conn.markActiveUsed,
     queryEditorRef,
   });
   const { executeQuery, cancelQuery } = queryExec;
@@ -479,26 +487,32 @@ export default function Studio() {
   );
 
   // === Cross-hook orchestration: connection-change effect ===
+  // Keyed on `activeConnection`, not `metadata`: `metadata` arrives after the connection is set,
+  // so keying on it too re-ran this effect a second time for the same connection and issued a
+  // second identical schema read (#1402). Editing a connection keeps its `id` but produces a new
+  // object (use-connection-form.ts), and that edit must still re-read the schema, so the id alone
+  // is not enough here. The tab-type update below, which does need `metadata`, is its own effect
+  // for the same reason `StudioWorkspace.tsx` splits them.
   useEffect(() => {
     if (conn.activeConnection) {
       txn.resetTransactionState();
       editing.setEditingEnabled(false);
       editing.handleDiscardChanges();
       conn.fetchSchema(conn.activeConnection);
-      const tabType = resolveTabType(metadata?.capabilities);
-      tabMgr.setTabs((prev) =>
-        prev.map((t) => {
-          return {
-            ...t,
-            type: tabType,
-          };
-        }),
-      );
     } else {
       conn.setSchema([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conn.activeConnection, metadata]);
+  }, [conn.activeConnection]);
+
+  const tabType = resolveTabType(metadata?.capabilities);
+  useEffect(() => {
+    if (!conn.activeConnection) return;
+    tabMgr.setTabs((prev) =>
+      prev.some((t) => t.type !== tabType) ? prev.map((t) => (t.type === tabType ? t : { ...t, type: tabType })) : prev,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conn.activeConnection?.id, tabType]);
 
   // === Modal state ===
   const [isConnectionModalOpen, setIsConnectionModalOpen] = useState(false);
@@ -575,6 +589,15 @@ export default function Studio() {
   const openSaveQuery = useCallback(() => setIsSaveQueryModalOpen(true), []);
   const [savedKey, setSavedKey] = useState(0);
   const [activeMobileTab, setActiveMobileTab] = useState<"database" | "schema" | "editor">("editor");
+  // The Schema tab is the phone layout's object tree, so opening it uses the connection as loading the tree does.
+  const { markActiveUsed } = conn;
+  const changeMobileTab = useCallback(
+    (tab: "database" | "schema" | "editor") => {
+      if (tab === "schema") markActiveUsed();
+      setActiveMobileTab(tab);
+    },
+    [markActiveUsed],
+  );
   /** What the panel group may hold: below the breakpoint, only the body panel. */
   const isMobile = useIsMobile();
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
@@ -1130,9 +1153,11 @@ export default function Studio() {
     const updated = [...managedConns, ...userConns];
     conn.setConnections(updated);
     // Rebuilt from storage, `updated` still holds the connections the server refuses while custom
-    // connections are off, so the next selection is the first connection the lists show.
+    // connections are off, so the next selection is the first connection the lists show. The page
+    // chooses it, not the person, so it is not counted as used: one whose requests resume billed
+    // compute is held until the person uses it (CL-CORE-2).
     const listed = connectionsUnderPolicy(updated, { customConnections: conn.customConnections });
-    if (conn.activeConnection?.id === id) conn.setActiveConnection(listed[0] ?? null);
+    if (conn.activeConnection?.id === id) conn.activateFallback(listed[0] ?? null);
   };
 
   const confirmDeleteConnection = () => {
@@ -1243,9 +1268,11 @@ export default function Studio() {
                 metadata={metadata}
                 metadataError={metadataError}
                 onRetryMetadata={retryMetadata}
-                objectScanDeferred={conn.objectScanDeferred}
+                objectScanDeferred={conn.objectScanDeferred || billedComputeHold}
+                deferredForBilledCompute={billedComputeHold && !conn.objectScanDeferred}
                 onLoadObjects={conn.loadObjects}
                 objectRefreshToken={objectRefreshToken}
+                connectionPulse={connectionPulse}
               />
             </ResizablePanel>
             <ResizableHandle className="w-1 bg-transparent hover:bg-brand-tint/30 transition-colors" />
@@ -1256,7 +1283,7 @@ export default function Studio() {
             <StudioMobileHeader
               connections={conn.connections}
               activeConnection={conn.activeConnection}
-              connectionPulse={conn.connectionPulse}
+              connectionPulse={connectionPulse}
               user={user}
               isAdmin={isAdmin}
               activeMobileTab={activeMobileTab}
@@ -1284,7 +1311,7 @@ export default function Studio() {
 
             <StudioDesktopHeader
               activeConnection={conn.activeConnection}
-              connectionPulse={conn.connectionPulse}
+              connectionPulse={connectionPulse}
               user={user}
               isAdmin={isAdmin}
               onLogout={handleLogout}
@@ -1497,6 +1524,7 @@ export default function Studio() {
                               activePartId={sourceTab.activePartId}
                               refreshToken={objectRefreshToken}
                               readAtToken={sourceTab.readAtToken}
+                              readAt={sourceTab.readAt}
                               editingPartId={sourceTab.editingPartId}
                               dirty={sourceTab.dirty}
                               /*
@@ -1677,7 +1705,7 @@ export default function Studio() {
         onLogout={handleLogout}
         shortcutsDialogRef={shortcutsDialogRef}
         activeMobileTab={activeMobileTab}
-        onMobileTabChange={setActiveMobileTab}
+        onMobileTabChange={changeMobileTab}
         hasResult={!!tabMgr.currentTab.result}
         onOpenAgent={agentEnabled ? openAgentSheet : undefined}
       />

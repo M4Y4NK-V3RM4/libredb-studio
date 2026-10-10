@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { CopyButton } from "@/components/copy-button";
 import { DatabaseType } from "@/lib/types";
 import type { DetailedObject } from "@/lib/db/detailed-object";
-import { quoteLiteral } from "@/lib/sql/values";
+import { quoteLiteral, temporalLiteral } from "@/lib/sql/values";
 import type { ProviderCapabilities } from "@/lib/db/types";
 import { objectPathLabel, pathKey } from "@/lib/db/object-path";
 import { jsonCommandAddress, quoteIdentifier, quoteObjectPath } from "@/lib/query-generators";
@@ -89,6 +89,12 @@ function inferFakerType(colName: string, colType: string): { generator: string; 
   if (type.includes("int")) return { generator: "integer", example: "42" };
   if (type.includes("float") || type.includes("double") || type.includes("decimal") || type.includes("numeric"))
     return { generator: "decimal", example: "3.14" };
+  // Oracle's one numeric family (#1400). `NUMBER(10,2)` reaches here as its `baseType`, `NUMBER`,
+  // so precision and scale are not in view. An integer avoids a fraction that a scale of 0 would
+  // round away, but it is not bounded by the precision: the generator draws up to 9999, which a
+  // narrow column such as `NUMBER(1)` or `NUMBER(5,2)` refuses with ORA-01438. Without this arm
+  // the column got `Sample text`.
+  if (type.startsWith("number")) return { generator: "integer", example: "42" };
   if (type.includes("date") && !type.includes("time")) return { generator: "date", example: "2024-03-15" };
   if (type.includes("time")) return { generator: "datetime", example: "2024-03-15 14:30:00" };
   if (type.includes("uuid")) return { generator: "uuid", example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890" };
@@ -99,6 +105,78 @@ function inferFakerType(colName: string, colType: string): { generator: string; 
 
 /** The generators whose text is a number, so a numeric MongoDB field can keep what its name picked. */
 const NUMERIC_GENERATORS: ReadonlySet<string> = new Set(["price", "age", "integer", "decimal", "zipCode"]);
+
+/**
+ * The generators whose column is left out of the INSERT: the engine fills in an auto-increment key,
+ * and a foreign key needs a value that exists in the table it points at, which the generator cannot
+ * know (#1400).
+ */
+const LEFT_OUT_GENERATORS: ReadonlySet<string> = new Set(["autoIncrement", "foreignKey"]);
+
+const FOREIGN_KEY_FAKER = { generator: "foreignKey", example: "an existing id" };
+
+/**
+ * The generators whose value has a FORMAT a suffix would break: numbers, booleans, dates, UUIDs, IP
+ * addresses, colours, phone numbers and hashes. Every other generator writes free text, so a suffix
+ * keeps it valid.
+ */
+const FORMAT_BOUND_GENERATORS: ReadonlySet<string> = new Set([
+  ...NUMERIC_GENERATORS,
+  "autoIncrement",
+  "foreignKey",
+  "boolean",
+  "date",
+  "datetime",
+  "uuid",
+  "ip",
+  "color",
+  "phone",
+  "hash",
+  "json",
+  "object",
+  "array",
+  "null",
+  "objectId",
+]);
+
+/** How many draws a unique column's value gets before the generator is taken to have run out. */
+const MAX_DISTINCT_DRAWS = 20;
+
+/**
+ * The value of a column under a unique constraint (#1400), distinct from the other rows of the same
+ * run. A free-text value gets a suffix: `token` is fixed for one generation and new for the next, so
+ * it is also distinct from any earlier run, and the row index keeps the rows of one run apart where
+ * the generator picks from a short list. A generator with a format of its own (see
+ * {@link FORMAT_BOUND_GENERATORS}) cannot take a suffix, so it is drawn again, up to
+ * {@link MAX_DISTINCT_DRAWS} times, until the column has not used the value in this run. That makes
+ * it distinct within a run only where the generator has enough values: a boolean has two, so its
+ * later rows still repeat. `taken` holds what each column has used so far in the run.
+ */
+function uniqueValue(
+  column: string,
+  generator: string,
+  next: () => unknown,
+  index: number,
+  token: string,
+  taken: Map<string, Set<string>>,
+): unknown {
+  let used = taken.get(column);
+  if (used === undefined) {
+    used = new Set();
+    taken.set(column, used);
+  }
+  let value = next();
+  if (typeof value === "string" && !FORMAT_BOUND_GENERATORS.has(generator)) {
+    if (generator === "email") {
+      const at = value.indexOf("@");
+      return `${value.slice(0, at)}.${token}${value.slice(at)}`;
+    }
+    return `${value}-${token}-${index + 1}`;
+  }
+  for (let draw = 1; draw < MAX_DISTINCT_DRAWS && used.has(JSON.stringify(value)); draw++) value = next();
+  used.add(JSON.stringify(value));
+  return value;
+}
 
 /**
  * The type a MongoDB field is written as. `inferSchemaFromDocuments` in the provider reports a field
@@ -323,25 +401,40 @@ export function TestDataGenerator({
 
   const columnConfigs = useMemo(() => {
     if (!tableSchema?.columns) return [];
-    return tableSchema.columns.map((col) => ({
-      ...col,
+    const foreignKeyColumns = new Set(tableSchema.foreignKeys?.map((fk) => fk.columnName));
+    return tableSchema.columns.map((col) => {
       // The FAMILY where the provider reports one, and the declaration otherwise (#1033):
       // MySQL and MariaDB report `enum('int','text')` in `type`, and every test below is a
       // substring test, so the declaration alone types an ENUM of two words as a number.
       // A JSON language's dotted name is a document path, and a SQL column's dot is part of
       // its name, so only the JSON arm reads the leaf (#1468).
-      faker:
+      const inferred =
         queryLanguage === "json"
           ? inferDocumentFakerType(col.name, col.baseType ?? col.type)
-          : inferFakerType(col.name, col.baseType ?? col.type),
-    }));
+          : inferFakerType(col.name, col.baseType ?? col.type);
+      // A foreign key is decided by the catalog, not by its name: `dept_id` and `manager` are both
+      // references, and `manager` would otherwise be generated as an age (#1400).
+      return { ...col, faker: foreignKeyColumns.has(col.name) ? FOREIGN_KEY_FAKER : inferred };
+    });
   }, [tableSchema, queryLanguage]);
+
+  const foreignKeyNames = columnConfigs.filter((c) => c.faker.generator === "foreignKey").map((c) => c.name);
 
   const generatedQuery = useMemo(() => {
     if (!tableSchema?.columns || columnConfigs.length === 0) return "";
 
-    // Filter out auto-increment columns
-    const cols = columnConfigs.filter((c) => c.faker.generator !== "autoIncrement");
+    // Filter out the columns the engine or the user fills in
+    const cols = columnConfigs.filter((c) => !LEFT_OUT_GENERATORS.has(c.faker.generator));
+
+    // The columns under a unique constraint: the primary key and every column of a unique index.
+    const uniqueColumns = new Set([
+      ...cols.filter((c) => c.isPrimary).map((c) => c.name),
+      ...tableSchema.indexes.filter((index) => index.unique).flatMap((index) => index.columns),
+    ]);
+    // One token per generation, so Regenerate and the next opening give values no earlier run used.
+    const runToken = uniqueColumns.size > 0 ? randomHex(3) : "";
+    // What each unique column has already written in this run.
+    const taken = new Map<string, Set<string>>();
 
     // Read through `capabilities` rather than `queryLanguage` so the declaration is in hand
     // for the address below; `queryLanguage` is the same field and stays in the deps.
@@ -355,7 +448,12 @@ export function TestDataGenerator({
       const docs = Array.from({ length: rowCount }, (_, i) => {
         const doc = Object.create(null) as Record<string, unknown>;
         for (const col of leafCols) {
-          setNestedValue(doc, col.name, documentFieldValue(col.faker.generator, col.baseType ?? col.type, i));
+          const next = () => documentFieldValue(col.faker.generator, col.baseType ?? col.type, i);
+          setNestedValue(
+            doc,
+            col.name,
+            uniqueColumns.has(col.name) ? uniqueValue(col.name, col.faker.generator, next, i, runToken, taken) : next(),
+          );
         }
         return doc;
       });
@@ -379,7 +477,10 @@ export function TestDataGenerator({
     const rows = Array.from({ length: rowCount }, (_, i) => {
       const values = cols.map((col) => {
         const gen = FAKE[col.faker.generator as keyof typeof FAKE];
-        const val = gen ? gen(i) : `value_${i}`;
+        const next = (): string => (gen ? gen(i) : `value_${i}`);
+        const val = uniqueColumns.has(col.name)
+          ? String(uniqueValue(col.name, col.faker.generator, next, i, runToken, taken))
+          : next();
         // Determine if value should be quoted. The generator is picked by column
         // NAME and this test reads the column TYPE, so the two can disagree —
         // `phone BIGINT` yields `+1-555-…`. The value itself decides, not the
@@ -394,10 +495,17 @@ export function TestDataGenerator({
             type.includes("double") ||
             type.includes("decimal") ||
             type.includes("numeric") ||
-            type.includes("real")) &&
+            type.includes("real") ||
+            type.startsWith("number")) &&
           /^-?\d+(\.\d+)?$/.test(val)
         )
           return val;
+        // A date or a timestamp in the dialect's own literal (#1400): Oracle refuses the
+        // quoted ISO text, and `temporalLiteral` holds which dialects write what.
+        if (col.faker.generator === "date")
+          return temporalLiteral(val, "date", databaseType as DatabaseType | undefined);
+        if (col.faker.generator === "datetime")
+          return temporalLiteral(val, "timestamp", databaseType as DatabaseType | undefined);
         // No generator can produce a quote or a backslash today, so the quoting
         // itself is shared rather than a fix: the next generator added inherits a
         // literal the connected engine reads as data (#290).
@@ -474,7 +582,7 @@ export function TestDataGenerator({
                 key={col.name}
                 className={cn(
                   "text-xs px-1.5 py-0.5 rounded font-mono",
-                  col.faker.generator === "autoIncrement"
+                  LEFT_OUT_GENERATORS.has(col.faker.generator)
                     ? "bg-overlay text-fg-subtle line-through"
                     : "bg-hue-amber-tint/10 text-hue-amber/80",
                 )}
@@ -484,6 +592,12 @@ export function TestDataGenerator({
               </span>
             ))}
           </div>
+          {foreignKeyNames.length > 0 && (
+            <p className="mt-2 text-xs text-fg-subtle">
+              Foreign key columns are left out of the INSERT ({foreignKeyNames.join(", ")}). Fill them with ids that
+              exist in the table they reference if they are NOT NULL.
+            </p>
+          )}
         </div>
 
         {/* Preview */}
@@ -496,7 +610,7 @@ export function TestDataGenerator({
         {/* Actions */}
         <div className="flex items-center justify-between px-5 py-3 border-t border-hairline bg-surface">
           <p className="text-xs text-fg-subtle">
-            {columnConfigs.filter((c) => c.faker.generator !== "autoIncrement").length} columns • {rowCount} rows
+            {columnConfigs.filter((c) => !LEFT_OUT_GENERATORS.has(c.faker.generator)).length} columns • {rowCount} rows
           </p>
           <div className="flex items-center gap-2">
             {/*

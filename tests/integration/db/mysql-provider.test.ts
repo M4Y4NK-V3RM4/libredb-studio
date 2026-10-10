@@ -4153,6 +4153,130 @@ describe("MySQLProvider EXPLAIN grammar probe", () => {
     expect(explainProbeCalls()).toEqual([]);
     expect(provider.getCapabilities().explainFormat).toBe("mysql-json");
   });
+
+  /**
+   * Vitess 25.0.0-SNAPSHOT (`vitess/vttestserver:mysql84`, built 2026-10-08) refuses to explain
+   * a statement that names no table, in both grammars, and explains both against a table of the
+   * keyspace (#1393). Measured 2026-10-09 through vtgate, keyspace `e2e`.
+   */
+  describe("a server that refuses to explain SELECT 1 (#1393)", () => {
+    const TABLE_LOOKUP =
+      "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' LIMIT 1";
+    const vitessKeyspaceRefusal = () =>
+      explainRefusal("VT03031: EXPLAIN is only supported for single keyspace", 1105, "ER_UNKNOWN_ERROR", "HY000");
+
+    /**
+     * Vitess 25's answers: both `SELECT 1` forms refused, the lookup answering `tables`, and any
+     * statement named in `refusals` refused as well.
+     */
+    function keyspaceServer(
+      tables: Record<string, unknown>[] | (() => Error),
+      refusals: Record<string, () => Error> = {},
+    ): (sql: string) => Promise<[unknown[], unknown[]]> {
+      const rest = refusing({
+        "explain format=json select 1": vitessKeyspaceRefusal,
+        "explain select 1": vitessKeyspaceRefusal,
+        ...refusals,
+      });
+      return (sql: string) => {
+        if (sql !== TABLE_LOOKUP) return rest(sql);
+        return typeof tables === "function" ? Promise.reject(tables()) : Promise.resolve([tables, []]);
+      };
+    }
+
+    const lookups = () => protocolCalls.filter((c) => c.sql === TABLE_LOOKUP);
+
+    test("it explains a table of the session's database instead, and keeps mysql-json", async () => {
+      mockExecuteFn = keyspaceServer([{ name: "customers" }]);
+
+      provider = new MySQLProvider(makeMySQLConfig());
+      await provider.connect();
+      const caps = provider.getCapabilities();
+
+      expect(caps.explainFormat).toBe("mysql-json");
+      expect(caps.supportsExplain).toBe(true);
+      expect(explainProbeCalls().map((c) => c.sql)).toEqual([
+        "EXPLAIN FORMAT=JSON SELECT 1",
+        "EXPLAIN SELECT 1",
+        "EXPLAIN FORMAT=JSON SELECT * FROM `customers` LIMIT 0",
+      ]);
+      expect(lookups()).toHaveLength(1);
+      expect(explainProbeCalls().every((c) => c.method === "query")).toBe(true);
+    });
+
+    test("the table is asked in the same order, so a JSON refusal there lands on mysql-text", async () => {
+      mockExecuteFn = keyspaceServer([{ name: "customers" }], {
+        "explain format=json select * from `customers` limit 0": dorisExplainRefusal,
+      });
+
+      provider = new MySQLProvider(makeMySQLConfig());
+      await provider.connect();
+
+      expect(provider.getCapabilities().explainFormat).toBe("mysql-text");
+      expect(
+        explainProbeCalls()
+          .map((c) => c.sql)
+          .slice(2),
+      ).toEqual(["EXPLAIN FORMAT=JSON SELECT * FROM `customers` LIMIT 0", "EXPLAIN SELECT * FROM `customers` LIMIT 0"]);
+    });
+
+    test("the table's name is quoted as an identifier", async () => {
+      mockExecuteFn = keyspaceServer([{ name: "odd`name" }]);
+
+      provider = new MySQLProvider(makeMySQLConfig());
+      await provider.connect();
+
+      expect(explainProbeCalls().map((c) => c.sql)[2]).toBe("EXPLAIN FORMAT=JSON SELECT * FROM `odd``name` LIMIT 0");
+    });
+
+    test("a database with no base table keeps no Explain and still connects", async () => {
+      mockExecuteFn = keyspaceServer([]);
+
+      provider = new MySQLProvider(makeMySQLConfig());
+      await provider.connect();
+      const caps = provider.getCapabilities();
+
+      expect(provider.isConnected()).toBe(true);
+      expect(caps.supportsExplain).toBe(false);
+      expect("explainFormat" in caps).toBe(false);
+      expect(explainProbeCalls().map((c) => c.sql)).toEqual(["EXPLAIN FORMAT=JSON SELECT 1", "EXPLAIN SELECT 1"]);
+    });
+
+    test("a lookup the server refuses keeps no Explain and still connects", async () => {
+      mockExecuteFn = keyspaceServer(parseErrorExplainRefusal);
+
+      provider = new MySQLProvider(makeMySQLConfig());
+      await provider.connect();
+
+      expect(provider.isConnected()).toBe(true);
+      expect(provider.getCapabilities().supportsExplain).toBe(false);
+      expect(explainProbeCalls()).toHaveLength(2);
+    });
+
+    test("a server that refuses the table form too keeps no Explain and still connects", async () => {
+      mockExecuteFn = keyspaceServer([{ name: "customers" }], {
+        "explain format=json select * from `customers` limit 0": vitessKeyspaceRefusal,
+        "explain select * from `customers` limit 0": vitessKeyspaceRefusal,
+      });
+
+      provider = new MySQLProvider(makeMySQLConfig());
+      await provider.connect();
+
+      expect(provider.isConnected()).toBe(true);
+      expect(provider.getCapabilities().supportsExplain).toBe(false);
+      expect(explainProbeCalls()).toHaveLength(4);
+    });
+
+    test("a server that explains SELECT 1 is never asked for a table", async () => {
+      mockExecuteFn = refusing({ "explain format=json select 1": dorisExplainRefusal });
+
+      provider = new MySQLProvider(makeMySQLConfig());
+      await provider.connect();
+
+      expect(provider.getCapabilities().explainFormat).toBe("mysql-text");
+      expect(lookups()).toEqual([]);
+    });
+  });
 });
 
 // ============================================================================
@@ -5317,41 +5441,118 @@ describe("object surface", () => {
     await provider.disconnect();
   });
 
-  test("the containers are ordered by code point, and TiDB's upper-case schemas are kept as before", async () => {
-    // TiDB 8.5.8 (`pingcap/tidb:v8.5.8`), measured 2026-10-04: SHOW DATABASES answers its own
-    // schemas in upper case, and SCHEMATA's `SCHEMA_NAME` is `utf8mb4_bin` there, so the
-    // former `NOT IN ('information_schema', ...)` never matched them and the tree showed
-    // INFORMATION_SCHEMA, METRICS_SCHEMA and PERFORMANCE_SCHEMA. The filter here is the same
-    // exact-case comparison, so that tree is unchanged, and so is the order: a binary
-    // collation and a code-point sort put upper case first.
+  // What `SHOW DATABASES` answers on a server where a person also created every name some
+  // OTHER engine in the family owns. Measured 2026-10-09 on mysql:8.4 with
+  // lower_case_table_names=0: `CREATE DATABASE` accepts MYSQL, SYS, cluster, memsql, oceanbase
+  // and METRICS_SCHEMA, and refuses INFORMATION_SCHEMA and Performance_Schema (1044).
+  const ENGINE_OWNED_NAMES = [
+    "shop",
+    "INFORMATION_SCHEMA",
+    "information_schema",
+    "METRICS_SCHEMA",
+    "PERFORMANCE_SCHEMA",
+    "performance_schema",
+    "oceanbase",
+    "cluster",
+    "memsql",
+    "clusters",
+    "e2e",
+    "mysql",
+    "MYSQL",
+    "sys",
+    "SYS",
+    "Analytics",
+  ];
+
+  async function containersOn(version: string, versionComment: string): Promise<string[]> {
     mockExecuteFn = async (sql: string) => {
       const normalized = sql.trim().toLowerCase();
-      if (normalized.includes("version()")) return [[{ version: "8.0.11-TiDB-v8.5.8" }], []];
-      if (normalized === "show databases") {
-        return [
-          ["test", "INFORMATION_SCHEMA", "METRICS_SCHEMA", "PERFORMANCE_SCHEMA", "e2e", "mysql", "sys"].map((name) => ({
-            Database: name,
-          })),
-          [],
-        ];
-      }
+      if (normalized.includes("@@version_comment")) return [[{ version_comment: versionComment }], []];
+      if (normalized.includes("version()")) return [[{ version }], []];
+      if (normalized === "show databases") return [ENGINE_OWNED_NAMES.map((name) => ({ Database: name })), []];
       if (normalized.startsWith("select database()")) return [[{ name: "e2e" }], []];
       return [[], []];
     };
     const provider = new MySQLProvider(makeMySQLConfig({ database: "e2e" }));
     await provider.connect();
-
     const containers = await provider.listContainers();
-
-    expect(containers.map((c) => c.name)).toEqual([
-      "INFORMATION_SCHEMA",
-      "METRICS_SCHEMA",
-      "PERFORMANCE_SCHEMA",
-      "e2e",
-      "test",
-    ]);
-    expect(containers.filter((c) => c.isSessionDefault).map((c) => c.name)).toEqual(["e2e"]);
     await provider.disconnect();
+    return containers.map((c) => c.name);
+  }
+
+  // Ordered by code point, so upper case sorts before lower case and `Analytics` leads.
+  test("on stock MySQL, hides only the reserved schemas and keeps every other engine's names as user databases", async () => {
+    expect(await containersOn("8.4.6", "MySQL Community Server - GPL")).toEqual([
+      "Analytics",
+      "METRICS_SCHEMA",
+      "MYSQL",
+      "SYS",
+      "cluster",
+      "clusters",
+      "e2e",
+      "memsql",
+      "oceanbase",
+      "shop",
+    ]);
+  });
+
+  test("on TiDB, hides the upper-case INFORMATION_SCHEMA, PERFORMANCE_SCHEMA and METRICS_SCHEMA (#1428)", async () => {
+    // Measured on TiDB v8.5.1 and v8.5.8: all three are answered in upper case.
+    expect(
+      await containersOn(
+        "8.0.11-TiDB-v8.5.1",
+        "TiDB Server (Apache License 2.0) Community Edition, MySQL 8.0 compatible",
+      ),
+    ).toEqual(["Analytics", "MYSQL", "SYS", "cluster", "clusters", "e2e", "memsql", "oceanbase", "shop"]);
+  });
+
+  test("on OceanBase, hides its own oceanbase database (#1428)", async () => {
+    expect(await containersOn("5.7.25-OceanBase_CE-v4.4.2.1", "OceanBase_CE 4.4.2.1")).toEqual([
+      "Analytics",
+      "METRICS_SCHEMA",
+      "MYSQL",
+      "SYS",
+      "cluster",
+      "clusters",
+      "e2e",
+      "memsql",
+      "shop",
+    ]);
+  });
+
+  for (const [label, reply] of [
+    ["refused", "refuse"],
+    ["NULL", null],
+  ] as const) {
+    test(`a ${label} @@version_comment leaves the engine unmeasured, so cluster and memsql stay listed`, async () => {
+      mockExecuteFn = async (sql: string) => {
+        const normalized = sql.trim().toLowerCase();
+        if (normalized.includes("@@version_comment")) {
+          if (reply === "refuse") throw Object.assign(new Error("Unknown system variable"), { errno: 1193 });
+          return [[{ version_comment: reply }], []];
+        }
+        if (normalized.includes("version()")) return [[{ version: "5.7.32" }], []];
+        if (normalized === "show databases")
+          return [["cluster", "memsql", "e2e"].map((name) => ({ Database: name })), []];
+        if (normalized.startsWith("select database()")) return [[{ name: "e2e" }], []];
+        return [[], []];
+      };
+      const provider = new MySQLProvider(makeMySQLConfig({ database: "e2e" }));
+      await provider.connect();
+      expect((await provider.listContainers()).map((c) => c.name)).toEqual(["cluster", "e2e", "memsql"]);
+      await provider.disconnect();
+    });
+  }
+
+  test("on SingleStore, recognised by @@version_comment, hides cluster and memsql (#1428)", async () => {
+    // Measured on singlestoredb-dev 0.2.82 (SingleStore 9.1.1): VERSION() is a plain 5.7.32,
+    // so the comment is the only thing naming the engine.
+    expect(
+      await containersOn(
+        "5.7.32",
+        "SingleStoreDB source distribution (compatible; MySQL Enterprise & MySQL Commercial)",
+      ),
+    ).toEqual(["Analytics", "METRICS_SCHEMA", "MYSQL", "SYS", "clusters", "e2e", "oceanbase", "shop"]);
   });
 
   test("nothing nests under a database", async () => {
